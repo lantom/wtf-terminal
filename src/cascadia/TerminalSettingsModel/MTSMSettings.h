@@ -37,6 +37,8 @@ Author(s):
     X(hstring, WordDelimiters, "wordDelimiters", DEFAULT_WORD_DELIMITERS)                                                                                                                             \
     X(bool, CopyOnSelect, "copyOnSelect", false)                                                                                                                                                      \
     X(bool, FocusFollowMouse, "focusFollowMouse", false)                                                                                                                                              \
+    X(bool, SmoothScrolling, "smoothScrolling", true)                                                                                                                                                  \
+    X(double, SmoothScrollingSpeed, "smoothScrollingSpeed", 1.0)                                                                                                                                       \
     X(bool, ScrollToZoom, "experimental.scrollToZoom", true)                                                                                                                                          \
     X(bool, ScrollToChangeOpacity, "experimental.scrollToChangeOpacity", true)                                                                                                                        \
     X(winrt::Microsoft::Terminal::Control::GraphicsAPI, GraphicsAPI, "rendering.graphicsAPI")                                                                                                         \

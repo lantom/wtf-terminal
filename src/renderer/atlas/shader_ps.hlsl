@@ -15,6 +15,8 @@ cbuffer ConstBuffer : register(b0)
     float doubleUnderlineWidth;
     float curlyLineHalfHeight;
     float shadedGlyphDotSize;
+    // Smooth scrolling: same value as the vertex shader's positionOffset.y.
+    float backgroundOffsetY;
 }
 
 Texture2D<float4> background : register(t0);
@@ -37,8 +39,8 @@ Output main(PSData data) : SV_Target
     {
     case SHADING_TYPE_TEXT_BACKGROUND:
     {
-        float2 cell = data.position.xy / backgroundCellSize;
-        color = all(cell < backgroundCellCount) ? background[cell] : backgroundColor;
+        float2 cell = (data.position.xy - float2(0.0f, backgroundOffsetY)) / backgroundCellSize;
+        color = all(cell >= 0.0f) && all(cell < backgroundCellCount) ? background[cell] : backgroundColor;
         weights = float4(1, 1, 1, 1);
         break;
     }

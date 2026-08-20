@@ -742,6 +742,39 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         return false;
     }
 
+    // Like UserScrollViewport(), but the target may sit between two rows. With smooth
+    // scrolling enabled the viewport glides there over the next few frames.
+    void ControlCore::SmoothScrollToRow(const double viewTop)
+    {
+        {
+            const auto lock = _terminal->LockForWriting();
+            _terminal->SmoothScrollToRow(viewTop);
+        }
+
+        // GH#20219: re-evaluate if we're hovering over a hyperlink after scrolling
+        _refreshHoveredCell();
+
+        const auto shared = _shared.lock_shared();
+        if (shared->outputIdle)
+        {
+            (*shared->outputIdle)();
+        }
+    }
+
+    bool ControlCore::SmoothScrollingEnabled() const
+    {
+        const auto lock = _terminal->LockForReading();
+        return _terminal->IsSmoothScrollingEnabled();
+    }
+
+    // How far up the rendered frame is currently shifted, in device pixels. Hit testing
+    // has to add this to the mouse position to land on the row the user actually sees.
+    til::CoordType ControlCore::ScrollPixelShift() const
+    {
+        const auto lock = _terminal->LockForReading();
+        return _terminal->GetScrollPixelShift();
+    }
+
     void ControlCore::UserScrollViewport(const int viewTop)
     {
         {

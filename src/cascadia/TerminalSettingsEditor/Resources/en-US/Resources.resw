@@ -1725,6 +1725,26 @@
     <value>Automatically focus pane on mouse hover</value>
     <comment>Header for a control to toggle the "focus follow mouse" setting. When enabled, hovering over a pane puts it in focus.</comment>
   </data>
+  <data name="Globals_SmoothScrolling.Header" xml:space="preserve">
+    <value>Smooth scrolling</value>
+    <comment>Header for a control to toggle smooth scrolling. When enabled, the terminal scrolls continuously, pixel by pixel, instead of jumping a whole line at a time.</comment>
+  </data>
+  <data name="Globals_SmoothScrolling.HelpText" xml:space="preserve">
+    <value>Scroll the terminal continuously, a pixel at a time, instead of jumping one line at a time. Rendered on the GPU.</value>
+    <comment>A description for what the "smooth scrolling" setting does.</comment>
+  </data>
+  <data name="Globals_SmoothScrollingSpeed.Header" xml:space="preserve">
+    <value>Smooth scrolling speed</value>
+    <comment>Header for a control to choose how fast the smooth scrolling animation is.</comment>
+  </data>
+  <data name="Globals_SmoothScrollingSpeed.HelpText" xml:space="preserve">
+    <value>How quickly the view catches up with the scroll position. Lower is slower and more gradual, higher is faster and more immediate.</value>
+    <comment>A description for what the "smooth scrolling speed" setting does.</comment>
+  </data>
+  <data name="Globals_SmoothScrollingSpeedSlider.[using:Windows.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve">
+    <value>Smooth scrolling speed</value>
+    <comment>Name for a control to choose how fast the smooth scrolling animation is.</comment>
+  </data>
   <data name="Globals_ScrollToZoom.Header" xml:space="preserve">
     <value>Adjust terminal font size by scrolling while holding the Ctrl key</value>
     <comment>Header for a control to toggle font size changes with scrolling. When enabled, holding the Ctrl key while scrolling will increase or decrease the terminal font size.</comment>

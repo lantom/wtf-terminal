@@ -88,6 +88,13 @@ namespace Microsoft::Console::Render
         [[nodiscard]] virtual HRESULT UpdateSoftFont(std::span<const uint16_t> bitPattern, til::size cellSize, size_t centeringHint) noexcept = 0;
         [[nodiscard]] virtual HRESULT UpdateDpi(int iDpi) noexcept = 0;
         [[nodiscard]] virtual HRESULT UpdateViewport(const til::inclusive_rect& srNewViewport) noexcept = 0;
+
+        // Smooth, pixel-perfect scrolling: shift the whole frame up by this many device
+        // pixels when presenting. Engines that don't support it simply ignore the value
+        // and keep rendering on exact row boundaries.
+        virtual void UpdateScrollPixelShift(til::CoordType /*shiftInPx*/) noexcept
+        {
+        }
         [[nodiscard]] virtual HRESULT GetProposedFont(const FontInfoDesired& FontInfoDesired, _Out_ FontInfo& FontInfo, int iDpi) noexcept = 0;
         [[nodiscard]] virtual HRESULT GetDirtyArea(std::span<const til::rect>& area) noexcept = 0;
         [[nodiscard]] virtual HRESULT GetFontSize(_Out_ til::size* pFontSize) noexcept = 0;

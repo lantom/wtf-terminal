@@ -2417,6 +2417,18 @@
           "description": "When set to true, the terminal will focus the pane on mouse hover.",
           "type": "boolean"
         },
+        "smoothScrolling": {
+          "default": true,
+          "description": "When set to true, the terminal scrolls continuously, a pixel at a time, instead of jumping a whole line at a time. The animation is rendered on the GPU.",
+          "type": "boolean"
+        },
+        "smoothScrollingSpeed": {
+          "default": 1.0,
+          "description": "How quickly the view catches up with the scroll position when \"smoothScrolling\" is enabled. Lower is slower and more gradual, higher is faster and more immediate. Clamped to the range 0.1 to 5.0.",
+          "maximum": 5.0,
+          "minimum": 0.1,
+          "type": "number"
+        },
         "experimental.scrollToZoom": {
           "default": true,
           "description": "When set to true, holding the Ctrl key while scrolling will increase or decrease the terminal font size.",

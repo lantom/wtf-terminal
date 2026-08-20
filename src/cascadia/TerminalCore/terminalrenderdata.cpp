@@ -13,6 +13,28 @@ Viewport Terminal::GetViewport() noexcept
     return _GetVisibleViewport();
 }
 
+// The viewport the renderer paints. When the frame is shifted up by a fraction of a row
+// (smooth scrolling), a strip is exposed at the bottom of the control, so we hand the
+// renderer one extra row to fill it with. GetViewport() itself keeps reporting the real
+// viewport, which is what the connection size, the scrollbar and hit testing rely on.
+Viewport Terminal::GetRenderViewport() noexcept
+{
+    const auto viewport = _GetVisibleViewport();
+
+    if (_scrollPixelShift <= 0)
+    {
+        return viewport;
+    }
+
+    const auto dimensions = viewport.Dimensions();
+    return Viewport::FromDimensions(viewport.Origin(), { dimensions.width, dimensions.height + 1 });
+}
+
+til::CoordType Terminal::GetScrollPixelShift() const noexcept
+{
+    return _scrollPixelShift;
+}
+
 til::point Terminal::GetTextBufferEndPosition() const noexcept
 {
     // We use the end line of mutableViewport as the end
@@ -36,6 +58,8 @@ void Terminal::SetFontInfo(const FontInfo& fontInfo)
 {
     _assertLocked();
     _fontInfo = fontInfo;
+    // The pixel shift is measured in the old cell height; recompute it against the new one.
+    _ApplySmoothScrollPosition();
 }
 
 TimerDuration Terminal::GetBlinkInterval() noexcept

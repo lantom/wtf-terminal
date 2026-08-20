@@ -51,6 +51,7 @@ namespace Microsoft::Console::Render::Atlas
         [[nodiscard]] HRESULT UpdateSoftFont(std::span<const uint16_t> bitPattern, til::size cellSize, size_t centeringHint) noexcept override;
         [[nodiscard]] HRESULT UpdateDpi(int iDpi) noexcept override;
         [[nodiscard]] HRESULT UpdateViewport(const til::inclusive_rect& srNewViewport) noexcept override;
+        void UpdateScrollPixelShift(til::CoordType shiftInPx) noexcept override;
         [[nodiscard]] HRESULT GetProposedFont(const FontInfoDesired& FontInfoDesired, _Out_ FontInfo& FontInfo, int iDpi) noexcept override;
         [[nodiscard]] HRESULT GetDirtyArea(std::span<const til::rect>& area) noexcept override;
         [[nodiscard]] HRESULT GetFontSize(_Out_ til::size* pFontSize) noexcept override;
@@ -182,6 +183,8 @@ namespace Microsoft::Console::Render::Atlas
 
             // The position of the viewport inside the text buffer (in cells).
             u16x2 viewportOffset{ 0, 0 };
+            // Smooth scrolling: pending vertical shift in device pixels, [0, cellHeight).
+            i16 scrollPixelShift = 0;
         } _api;
     };
 }

@@ -134,6 +134,12 @@ try
     _p.scrollOffsetX = _api.viewportOffset.x;
     _p.scrollDeltaY = _api.scrollOffset;
 
+    // Smooth scrolling: when the sub-row shift changes, every pixel on screen moves by
+    // an amount that is not a whole number of rows, so nothing of the previous frame
+    // can be reused. Handled further down, after the row cache has been rotated.
+    const auto scrollPixelShiftChanged = _p.scrollPixelShift != _api.scrollPixelShift;
+    _p.scrollPixelShift = _api.scrollPixelShift;
+
     // This if condition serves 2 purposes:
     // * By setting top/bottom to the full height we ensure that we call Present() without
     //   any dirty rects and not Present1() on the first frame after the settings change.
@@ -218,6 +224,15 @@ try
                 dst += _p.colorBitmapDepthStride;
             }
         }
+    }
+
+    if (scrollPixelShiftChanged)
+    {
+        // The row cache above has already been rotated with the real scroll delta, which
+        // is what keeps rows from being re-shaped. Only the swap chain optimization has
+        // to go: present the whole surface instead.
+        _p.dirtyRectInPx = { 0, 0, _p.s->targetSize.x, _p.s->targetSize.y };
+        _p.scrollDeltaY = 0;
     }
 
     // This serves two purposes. For each invalidated row, this will:

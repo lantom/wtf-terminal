@@ -25,6 +25,7 @@
     <ClCompile Include="TerminalApiTest.cpp" />
     <ClCompile Include="TerminalBufferTests.cpp" />
     <ClCompile Include="ScrollTest.cpp" />
+    <ClCompile Include="SmoothScrollTest.cpp" />
     <ClCompile Include="TilWinRtHelpersTests.cpp" />
   </ItemGroup>
   <ItemGroup>

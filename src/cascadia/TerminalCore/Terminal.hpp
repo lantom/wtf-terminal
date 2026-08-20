@@ -48,6 +48,7 @@ namespace TerminalCoreUnitTests
     class TerminalBufferTests;
     class TerminalApiTest;
     class ScrollTest;
+    class SmoothScrollTest;
 };
 #endif
 
@@ -184,6 +185,21 @@ public:
     void UserScrollViewport(const int viewTop) override;
     int GetScrollOffset() noexcept override;
 
+#pragma region Smooth scrolling
+    // Configures the "paper-like" smooth scrolling. speed is a multiplier on the
+    // animation rate; 1.0 is the default, larger is snappier. Disabling it restores
+    // the classic behaviour of snapping to whole rows immediately.
+    void SetSmoothScrollingSettings(bool enabled, double speed) noexcept;
+    bool IsSmoothScrollingEnabled() const noexcept;
+    // The viewport top the animation is heading towards, expressed the same way as
+    // GetScrollOffset(): as an absolute buffer row. Fractional while animating.
+    double GetSmoothScrollTargetRow() const noexcept;
+    double GetSmoothScrollCurrentRow() const noexcept;
+    // Scrolls to a fractional buffer row. With smooth scrolling enabled this starts an
+    // animation; otherwise it behaves exactly like UserScrollViewport(lround(viewTop)).
+    void SmoothScrollToRow(const double viewTop);
+#pragma endregion
+
     void TrySnapOnInput() override;
     bool IsTrackingMouseInput() const noexcept;
     bool ShouldSendAlternateScroll(const unsigned int uiButton, const int32_t delta) const noexcept;
@@ -196,6 +212,9 @@ public:
 
 #pragma region IRenderData
     Microsoft::Console::Types::Viewport GetViewport() noexcept override;
+    Microsoft::Console::Types::Viewport GetRenderViewport() noexcept override;
+    til::CoordType GetScrollPixelShift() const noexcept override;
+    bool AdvanceScrollAnimation() noexcept override;
     til::point GetTextBufferEndPosition() const noexcept override;
     TextBuffer& GetTextBuffer() const noexcept override;
     const FontInfo& GetFontInfo() const noexcept override;
@@ -421,6 +440,21 @@ private:
     // _scrollOffset is the number of lines above the viewport that are currently visible
     // If _scrollOffset is 0, then the visible region of the buffer is the viewport.
     til::CoordType _scrollOffset = 0;
+
+    // Smooth, pixel-perfect scrolling.
+    //
+    // _smoothScrollCurrent/_smoothScrollTarget live in the same units as _scrollOffset -
+    // "rows above the mutable viewport" - but are fractional. _scrollOffset is always
+    // ceil(_smoothScrollCurrent) and _scrollPixelShift holds the leftover fraction,
+    // rounded to a whole device pixel so that glyphs stay crisp.
+    double _smoothScrollCurrent = 0.0;
+    double _smoothScrollTarget = 0.0;
+    double _smoothScrollSpeed = 1.0;
+    bool _smoothScrollEnabled = false;
+    // 0 <= _scrollPixelShift < cellHeight. The renderer moves the frame up by this much.
+    til::CoordType _scrollPixelShift = 0;
+    // QueryPerformanceCounter value of the last animation tick; 0 means "not running".
+    int64_t _smoothScrollLastTick = 0;
     // TODO this might not be the value we want to store.
     // We might want to store the height in the scrollback that's currently visible.
     // Think on this some more.
@@ -465,6 +499,12 @@ private:
     Microsoft::Console::Types::Viewport _GetVisibleViewport() const noexcept;
 
     void _PreserveUserScrollOffset(const int viewportDelta) noexcept;
+    void _SetScrollOffsetImmediate(const til::CoordType offset) noexcept;
+    bool _ApplySmoothScrollPosition() noexcept;
+    til::CoordType _MaxScrollOffset() const noexcept;
+    // Advances the animation by an explicit time step. AdvanceScrollAnimation() measures
+    // the step off the wall clock and calls this; tests drive it directly.
+    bool _StepScrollAnimation(const double deltaSeconds) noexcept;
     til::CoordType _ScrollToPoints(const til::point coordStart, const til::point coordEnd);
 
     void _NotifyScrollEvent();
@@ -491,5 +531,6 @@ private:
     friend class TerminalCoreUnitTests::TerminalBufferTests;
     friend class TerminalCoreUnitTests::TerminalApiTest;
     friend class TerminalCoreUnitTests::ScrollTest;
+    friend class TerminalCoreUnitTests::SmoothScrollTest;
 #endif
 };

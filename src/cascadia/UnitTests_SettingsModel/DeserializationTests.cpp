@@ -68,6 +68,9 @@ namespace SettingsModelUnitTests
 
         TEST_METHOD(MigrateReloadEnvVars);
 
+        TEST_METHOD(SmoothScrollingDefaults);
+        TEST_METHOD(SmoothScrollingParsing);
+
     private:
         static winrt::com_ptr<implementation::CascadiaSettings> createSettings(const std::string_view& userJSON)
         {
@@ -2336,5 +2339,48 @@ namespace SettingsModelUnitTests
         Log::Comment(L"Ensure that the profile defaults have the new setting added");
         VERIFY_IS_TRUE(settings->ProfileDefaults().HasReloadEnvironmentVariables());
         VERIFY_IS_FALSE(settings->ProfileDefaults().ReloadEnvironmentVariables());
+    }
+
+    // Smooth scrolling is on out of the box, at speed 1.0.
+    void DeserializationTests::SmoothScrollingDefaults()
+    {
+        static constexpr std::string_view settingsJson{ R"(
+        {
+            "defaultProfile": "{6239a42c-0000-49a3-80bd-e8fdd045185c}",
+            "profiles": [
+                {
+                    "name": "profile0",
+                    "guid": "{6239a42c-0000-49a3-80bd-e8fdd045185c}"
+                }
+            ]
+        })" };
+
+        const auto settings = winrt::make_self<implementation::CascadiaSettings>(settingsJson);
+        const auto window = settings->WindowSettingsDefaults();
+
+        VERIFY_IS_TRUE(window.SmoothScrolling());
+        VERIFY_ARE_EQUAL(1.0, window.SmoothScrollingSpeed());
+    }
+
+    void DeserializationTests::SmoothScrollingParsing()
+    {
+        static constexpr std::string_view settingsJson{ R"(
+        {
+            "defaultProfile": "{6239a42c-0000-49a3-80bd-e8fdd045185c}",
+            "smoothScrolling": false,
+            "smoothScrollingSpeed": 2.5,
+            "profiles": [
+                {
+                    "name": "profile0",
+                    "guid": "{6239a42c-0000-49a3-80bd-e8fdd045185c}"
+                }
+            ]
+        })" };
+
+        const auto settings = winrt::make_self<implementation::CascadiaSettings>(settingsJson);
+        const auto window = settings->WindowSettingsDefaults();
+
+        VERIFY_IS_FALSE(window.SmoothScrolling());
+        VERIFY_ARE_EQUAL(2.5, window.SmoothScrollingSpeed());
     }
 }

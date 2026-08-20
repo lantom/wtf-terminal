@@ -113,6 +113,9 @@ namespace Microsoft.Terminal.Core
         Int32 InitialCols { get; };
 
         Boolean SnapOnInput { get; };
+        // Smooth, pixel-perfect scrolling and how fast the animation converges.
+        Boolean SmoothScrolling { get; };
+        Double SmoothScrollingSpeed { get; };
         Boolean AltGrAliasing { get; };
         String AnswerbackMessage { get; };
 

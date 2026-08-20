@@ -221,6 +221,12 @@ try
 }
 CATCH_RETURN()
 
+void AtlasEngine::UpdateScrollPixelShift(til::CoordType shiftInPx) noexcept
+{
+    const auto cellHeight = _api.s->font->cellSize.y;
+    _api.scrollPixelShift = gsl::narrow_cast<i16>(std::clamp<til::CoordType>(shiftInPx, 0, std::max(0, cellHeight - 1)));
+}
+
 [[nodiscard]] HRESULT AtlasEngine::GetProposedFont(const FontInfoDesired& fontInfoDesired, _Out_ FontInfo& fontInfo, const int dpi) noexcept
 try
 {

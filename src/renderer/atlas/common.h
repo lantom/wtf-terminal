@@ -585,6 +585,9 @@ namespace Microsoft::Console::Render::Atlas
         i32 scrollOffsetX = 0;
         // In pixel.
         i16 scrollDeltaY = 0;
+        // Smooth scrolling: the whole frame is drawn shifted up by this many device
+        // pixels. Always in [0, cellHeight).
+        i16 scrollPixelShift = 0;
 
         void MarkAllAsDirty() noexcept
         {

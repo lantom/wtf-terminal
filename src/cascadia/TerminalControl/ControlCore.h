@@ -207,6 +207,9 @@ namespace winrt::Microsoft::Terminal::Control::implementation
                             const short wheelDelta,
                             const ::Microsoft::Console::VirtualTerminal::TerminalInput::MouseButtonState state);
         void UserScrollViewport(const int viewTop);
+        void SmoothScrollToRow(const double viewTop);
+        bool SmoothScrollingEnabled() const;
+        til::CoordType ScrollPixelShift() const;
 
         void ClearBuffer(Control::ClearBufferType clearType);
 

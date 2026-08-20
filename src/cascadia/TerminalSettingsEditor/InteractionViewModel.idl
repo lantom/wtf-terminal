@@ -25,6 +25,8 @@ namespace Microsoft.Terminal.Settings.Editor
         PERMANENT_OBSERVABLE_PROJECTED_SETTING(Boolean, TrimPaste);
         PERMANENT_OBSERVABLE_PROJECTED_SETTING(Boolean, SnapToGridOnResize);
         PERMANENT_OBSERVABLE_PROJECTED_SETTING(Boolean, FocusFollowMouse);
+        PERMANENT_OBSERVABLE_PROJECTED_SETTING(Boolean, SmoothScrolling);
+        PERMANENT_OBSERVABLE_PROJECTED_SETTING(Double, SmoothScrollingSpeed);
         PERMANENT_OBSERVABLE_PROJECTED_SETTING(Boolean, ScrollToZoom);
         PERMANENT_OBSERVABLE_PROJECTED_SETTING(Boolean, ScrollToChangeOpacity);
         PERMANENT_OBSERVABLE_PROJECTED_SETTING(Boolean, DetectURLs);

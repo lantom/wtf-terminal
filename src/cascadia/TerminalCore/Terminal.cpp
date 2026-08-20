@@ -94,6 +94,7 @@ void Terminal::UpdateSettings(ICoreSettings settings)
     UpdateAppearance(settings);
 
     _snapOnInput = settings.SnapOnInput();
+    SetSmoothScrollingSettings(settings.SmoothScrolling(), settings.SmoothScrollingSpeed());
     _altGrAliasing = settings.AltGrAliasing();
     _answerbackMessage = settings.AnswerbackMessage();
     _wordDelimiters = settings.WordDelimiters();
@@ -464,7 +465,7 @@ try
 
     // If the old scrolloffset was 0, then we weren't scrolled back at all
     // before, and shouldn't be now either.
-    _scrollOffset = originalOffsetWasZero ? 0 : static_cast<int>(::base::ClampSub(_mutableViewport.Top(), newVisibleTop));
+    _SetScrollOffsetImmediate(originalOffsetWasZero ? 0 : static_cast<int>(::base::ClampSub(_mutableViewport.Top(), newVisibleTop)));
 
     _mainBuffer->TriggerRedrawAll();
     _NotifyScrollEvent();
@@ -487,9 +488,9 @@ void Terminal::Write(std::wstring_view stringView)
 // - <none>
 void Terminal::TrySnapOnInput()
 {
-    if (_snapOnInput && _scrollOffset != 0)
+    if (_snapOnInput && (_scrollOffset != 0 || _smoothScrollTarget != 0.0))
     {
-        _scrollOffset = 0;
+        _SetScrollOffsetImmediate(0);
         _NotifyScrollEvent();
     }
 }
@@ -1092,8 +1093,15 @@ void Terminal::_PreserveUserScrollOffset(const int viewportDelta) noexcept
     // by the same amount that we've just moved down.
     if (viewportDelta > 0 && (IsSelectionActive() || _scrollOffset != 0))
     {
-        const auto maxScrollOffset = _activeBuffer().GetSize().Height() - _mutableViewport.Height();
-        _scrollOffset = std::min(_scrollOffset + viewportDelta, maxScrollOffset);
+        const auto maxScrollOffset = _MaxScrollOffset();
+        const auto newOffset = std::min(_scrollOffset + viewportDelta, maxScrollOffset);
+        // Move the animation along by the same whole number of rows, so that the sub-row
+        // shift - and therefore what the user is actually looking at - stays put instead
+        // of being yanked around by incoming output.
+        const auto appliedDelta = static_cast<double>(newOffset - _scrollOffset);
+        _scrollOffset = newOffset;
+        _smoothScrollCurrent = std::clamp(_smoothScrollCurrent + appliedDelta, 0.0, static_cast<double>(maxScrollOffset));
+        _smoothScrollTarget = std::clamp(_smoothScrollTarget + appliedDelta, 0.0, static_cast<double>(maxScrollOffset));
     }
 }
 
@@ -1112,13 +1120,235 @@ void Terminal::UserScrollViewport(const int viewTop)
     const auto newDelta = realTop - clampedNewTop;
     // if viewTop > realTop, we want the offset to be 0.
 
-    _scrollOffset = std::max(0, newDelta);
+    _SetScrollOffsetImmediate(std::max(0, newDelta));
 
     // We can use the void variant of TriggerScroll here because
     // we adjusted the viewport so it can detect the difference
     // from the previous frame drawn.
     _activeBuffer().TriggerScroll();
 }
+
+#pragma region Smooth scrolling
+
+// The time constant of the scroll animation at speed 1.0, in seconds. After this much
+// time roughly 63% of the remaining distance has been covered. Small enough to feel
+// immediate, large enough to read as motion rather than a jump.
+static constexpr double SmoothScrollBaseTimeConstant = 0.09;
+
+static int64_t SmoothScrollNow() noexcept
+{
+    LARGE_INTEGER counter{};
+    QueryPerformanceCounter(&counter);
+    return counter.QuadPart;
+}
+
+static int64_t SmoothScrollTicksPerSecond() noexcept
+{
+    static const int64_t frequency = []() {
+        LARGE_INTEGER f{};
+        QueryPerformanceFrequency(&f);
+        return f.QuadPart != 0 ? f.QuadPart : 1;
+    }();
+    return frequency;
+}
+
+// Sets the viewport top to a fractional buffer row. With smooth scrolling enabled this
+// only moves the animation target; the visible position catches up over the next few
+// frames. Otherwise this is UserScrollViewport() with the row rounded to a whole line.
+void Terminal::SmoothScrollToRow(const double viewTop)
+{
+    if (!_smoothScrollEnabled || _inAltBuffer())
+    {
+        UserScrollViewport(gsl::narrow_cast<int>(std::lround(viewTop)));
+        return;
+    }
+
+    // Clear the regex pattern tree so the renderer does not try to render them while scrolling
+    _clearPatternTree();
+
+    const auto realTop = static_cast<double>(ViewStartIndex());
+    const auto clampedNewTop = std::max(0.0, viewTop);
+    // Same sign convention as UserScrollViewport: the offset counts rows *above* the
+    // mutable viewport, so a smaller viewTop means a larger offset.
+    const auto newTarget = std::clamp(realTop - clampedNewTop, 0.0, static_cast<double>(_MaxScrollOffset()));
+
+    if (newTarget == _smoothScrollTarget)
+    {
+        return;
+    }
+
+    _smoothScrollTarget = newTarget;
+    // Start measuring time from now. The first tick of a fresh animation must not
+    // consume the (potentially very long) gap since the previous one.
+    if (_smoothScrollLastTick == 0)
+    {
+        _smoothScrollLastTick = SmoothScrollNow();
+    }
+    _activeBuffer().TriggerScroll();
+}
+
+void Terminal::SetSmoothScrollingSettings(bool enabled, double speed) noexcept
+{
+    _smoothScrollSpeed = std::clamp(speed, 0.1, 5.0);
+
+    if (_smoothScrollEnabled == enabled)
+    {
+        return;
+    }
+
+    _smoothScrollEnabled = enabled;
+
+    if (!enabled)
+    {
+        // Land on a whole row again so we do not leave a stale pixel shift behind.
+        _SetScrollOffsetImmediate(_scrollOffset);
+    }
+}
+
+bool Terminal::IsSmoothScrollingEnabled() const noexcept
+{
+    return _smoothScrollEnabled;
+}
+
+double Terminal::GetSmoothScrollTargetRow() const noexcept
+{
+    return static_cast<double>(ViewStartIndex()) - _smoothScrollTarget;
+}
+
+double Terminal::GetSmoothScrollCurrentRow() const noexcept
+{
+    return static_cast<double>(ViewStartIndex()) - _smoothScrollCurrent;
+}
+
+til::CoordType Terminal::_MaxScrollOffset() const noexcept
+{
+    return std::max(0, _activeBuffer().GetSize().Height() - _mutableViewport.Height());
+}
+
+// Snaps both the animation and the rendered position onto a whole row. Used whenever
+// something other than the user moves the viewport (resize, snap-on-input, ...).
+void Terminal::_SetScrollOffsetImmediate(const til::CoordType offset) noexcept
+{
+    _scrollOffset = offset;
+    _smoothScrollCurrent = static_cast<double>(offset);
+    _smoothScrollTarget = static_cast<double>(offset);
+    _scrollPixelShift = 0;
+    _smoothScrollLastTick = 0;
+}
+
+// Recomputes _scrollOffset and _scrollPixelShift from _smoothScrollCurrent.
+// Returns true if the integer row offset changed.
+bool Terminal::_ApplySmoothScrollPosition() noexcept
+{
+    const auto previousOffset = _scrollOffset;
+
+    if (!_smoothScrollEnabled || _inAltBuffer())
+    {
+        _scrollPixelShift = 0;
+        _smoothScrollCurrent = static_cast<double>(_scrollOffset);
+        _smoothScrollTarget = static_cast<double>(_scrollOffset);
+        return false;
+    }
+
+    const auto cellHeight = _fontInfo.GetSize().height;
+    const auto position = std::clamp(_smoothScrollCurrent, 0.0, static_cast<double>(_MaxScrollOffset()));
+
+    // _scrollOffset counts rows *above* the viewport, so the row we start painting at
+    // is ceil(position) and the leftover fraction exposes a strip at the bottom.
+    auto offset = gsl::narrow_cast<til::CoordType>(std::ceil(position));
+    auto shift = cellHeight > 0 ? gsl::narrow_cast<til::CoordType>(std::lround((offset - position) * cellHeight)) : 0;
+
+    // Rounding may push the shift onto the next row boundary; normalize it.
+    if (cellHeight > 0 && shift >= cellHeight)
+    {
+        shift = 0;
+        offset -= 1;
+    }
+
+    offset = std::clamp(offset, 0, _MaxScrollOffset());
+    // A non-zero shift needs a spare row below the viewport to paint into. offset >= 1
+    // guarantees one exists, and offset == 0 can only happen when position == 0, where
+    // the shift is 0 anyway.
+    if (offset <= 0)
+    {
+        shift = 0;
+    }
+
+    _scrollOffset = offset;
+    _scrollPixelShift = shift;
+    return previousOffset != _scrollOffset;
+}
+
+// Called by the renderer once per frame with the console lock held. Returns true while
+// the animation is still running, which makes the renderer schedule another frame.
+bool Terminal::AdvanceScrollAnimation() noexcept
+{
+    if (!_smoothScrollEnabled || _inAltBuffer())
+    {
+        _scrollPixelShift = 0;
+        return false;
+    }
+
+    const auto now = SmoothScrollNow();
+    const auto previous = _smoothScrollLastTick;
+    _smoothScrollLastTick = now;
+
+    // First tick of an animation: just record the timestamp and draw the current frame.
+    // This also guards against a bogus delta if the render thread was stalled.
+    auto dt = 0.0;
+    if (previous != 0 && now > previous)
+    {
+        dt = std::min(0.1, static_cast<double>(now - previous) / static_cast<double>(SmoothScrollTicksPerSecond()));
+    }
+
+    return _StepScrollAnimation(dt);
+}
+
+bool Terminal::_StepScrollAnimation(const double deltaSeconds) noexcept
+{
+    if (!_smoothScrollEnabled || _inAltBuffer())
+    {
+        _scrollPixelShift = 0;
+        return false;
+    }
+
+    const auto diff = _smoothScrollTarget - _smoothScrollCurrent;
+    const auto cellHeight = std::max(1, _fontInfo.GetSize().height);
+    // Settle once we are within half a device pixel of the target. Any closer is
+    // invisible and would keep the render thread spinning forever.
+    const auto epsilon = 0.5 / cellHeight;
+
+    if (std::abs(diff) < epsilon)
+    {
+        if (_smoothScrollCurrent != _smoothScrollTarget)
+        {
+            _smoothScrollCurrent = _smoothScrollTarget;
+            _ApplySmoothScrollPosition();
+        }
+        _smoothScrollLastTick = 0;
+        return false;
+    }
+
+    if (deltaSeconds > 0.0)
+    {
+        const auto tau = SmoothScrollBaseTimeConstant / _smoothScrollSpeed;
+        const auto alpha = 1.0 - std::exp(-deltaSeconds / tau);
+        _smoothScrollCurrent += diff * alpha;
+    }
+
+    if (_ApplySmoothScrollPosition())
+    {
+        // _NotifyScrollEvent() dispatches to the hosting control and is not noexcept.
+        try
+        {
+            _NotifyScrollEvent();
+        }
+        CATCH_LOG()
+    }
+    return true;
+}
+
+#pragma endregion
 
 int Terminal::GetScrollOffset() noexcept
 {

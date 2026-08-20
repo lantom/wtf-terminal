@@ -91,6 +91,26 @@
                               Style="{StaticResource ToggleSwitchInExpanderStyle}" />
             </local:SettingContainer>
 
+            <!--  Smooth Scrolling  -->
+            <local:SettingContainer x:Name="SmoothScrolling"
+                                    x:Uid="Globals_SmoothScrolling">
+                <ToggleSwitch IsOn="{x:Bind ViewModel.SmoothScrolling, Mode=TwoWay}"
+                              Style="{StaticResource ToggleSwitchInExpanderStyle}" />
+            </local:SettingContainer>
+
+            <!--  Smooth Scrolling Speed  -->
+            <local:SettingContainer x:Name="SmoothScrollingSpeed"
+                                    x:Uid="Globals_SmoothScrollingSpeed">
+                <Slider x:Uid="Globals_SmoothScrollingSpeedSlider"
+                        MaxWidth="240"
+                        HorizontalAlignment="Left"
+                        Maximum="5.0"
+                        Minimum="0.1"
+                        StepFrequency="0.1"
+                        TickFrequency="0.1"
+                        Value="{x:Bind ViewModel.SmoothScrollingSpeed, Mode=TwoWay}" />
+            </local:SettingContainer>
+
             <!--  Enable Font Size Changes with Scrolling  -->
             <local:SettingContainer x:Name="ScrollToZoom"
                                     x:Uid="Globals_ScrollToZoom">

@@ -56,7 +56,7 @@ void Renderer::EnablePainting()
 {
     // When the renderer is constructed, the initial viewport won't be available yet,
     // but once EnablePainting is called it should be safe to retrieve.
-    _viewport = _pData->GetViewport();
+    _viewport = _pData->GetRenderViewport();
 
     // _viewport feeds the cursor coordinate (_updateCursorInfo), while the engine's
     // backing buffer (e.g. AtlasEngine's _p.rows) is sized from viewportCellCount,
@@ -383,6 +383,8 @@ DWORD Renderer::_timerToMillis(TimerRepr t) noexcept
 
 [[nodiscard]] HRESULT Renderer::_PaintFrame() noexcept
 {
+    auto scrollAnimationRunning = false;
+
     {
         _pData->LockConsole();
         auto unlock = wil::scope_exit([&]() {
@@ -396,6 +398,10 @@ DWORD Renderer::_timerToMillis(TimerRepr t) noexcept
 
         _tickTimers();
 
+        // Advance the smooth scrolling animation. This has to happen before
+        // _CheckViewportAndScroll() below, because it is what moves the viewport.
+        scrollAnimationRunning = _pData->AdvanceScrollAnimation();
+
         // We reset _redraw after _tickTimers() so that NotifyPaintFrame() calls
         // are picked up and ignored. We're about to render a frame after all.
         // We do it before the remaining code below so that if we do have an
@@ -404,6 +410,16 @@ DWORD Renderer::_timerToMillis(TimerRepr t) noexcept
 
         // NOTE: _CheckViewportAndScroll() updates _viewport which is used by all other functions.
         _CheckViewportAndScroll();
+
+        // Tell the engines how far up this frame has to be shifted for smooth scrolling.
+        // This has to happen before StartPaint(), which is where they latch it.
+        {
+            const auto scrollPixelShift = _pData->GetScrollPixelShift();
+            for (const auto pEngine : _engines)
+            {
+                pEngine->UpdateScrollPixelShift(scrollPixelShift);
+            }
+        }
 
         _scheduleRenditionBlink();
 
@@ -426,6 +442,11 @@ DWORD Renderer::_timerToMillis(TimerRepr t) noexcept
     for (const auto pEngine : _engines)
     {
         RETURN_IF_FAILED(pEngine->Present());
+    }
+
+    if (scrollAnimationRunning)
+    {
+        NotifyPaintFrame();
     }
 
     return S_OK;
@@ -769,7 +790,7 @@ CATCH_LOG()
 bool Renderer::_CheckViewportAndScroll()
 {
     const auto srOldViewport = _viewport.ToInclusive();
-    const auto srNewViewport = _pData->GetViewport().ToInclusive();
+    const auto srNewViewport = _pData->GetRenderViewport().ToInclusive();
 
     if (!_forceUpdateViewport && srOldViewport == srNewViewport)
     {

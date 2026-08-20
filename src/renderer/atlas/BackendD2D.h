@@ -64,6 +64,13 @@ namespace Microsoft::Console::Render::Atlas
 
         Buffer<DWRITE_GLYPH_METRICS> _glyphMetrics;
 
+        // Smooth scrolling: the whole frame is drawn through a translation of -shift.
+        D2D1_MATRIX_3X2_F _baseTransform() const noexcept
+        {
+            return { .m11 = 1, .m22 = 1, .dy = -_scrollPixelShift };
+        }
+
+        f32 _scrollPixelShift = 0;
         til::generation_t _generation;
         til::generation_t _fontGeneration;
         til::generation_t _cursorGeneration;

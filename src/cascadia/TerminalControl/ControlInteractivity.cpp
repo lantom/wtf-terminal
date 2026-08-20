@@ -666,6 +666,21 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         // scroll each time the mouse scrolls.
         _internalScrollbarPosition = std::clamp(newValue, 0.0f, static_cast<float>(_core->BufferHeight()));
 
+        // With smooth scrolling the fractional position is exactly what we want to keep:
+        // it becomes the animation target and the renderer resolves it down to whole
+        // device pixels. A precision trackpad can therefore move the view by less than a
+        // row, which the classic path below has to round away.
+        if (_core->SmoothScrollingEnabled())
+        {
+            _core->SmoothScrollToRow(_internalScrollbarPosition);
+
+            ScrollPositionChanged.raise(*this,
+                                        winrt::make<ScrollPositionChangedArgs>(_core->ScrollOffset(),
+                                                                               _core->ViewHeight(),
+                                                                               _core->BufferHeight()));
+            return;
+        }
+
         // If the new scrollbar position, rounded to an int, is at a different
         // row, then actually update the scroll position in the core, and raise
         // a ScrollPositionChanged to inform the control.
@@ -742,16 +757,20 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         // Get the size of the font, which is in pixels
         const auto fontSize{ _core->GetFont().GetSize() };
 
+        // Smooth scrolling draws the frame shifted up by a sub-row amount, so the row
+        // under the cursor is the one this many pixels further down in the buffer.
+        const auto position = til::point{ pixelPosition.x, pixelPosition.y + _core->ScrollPixelShift() };
+
         if (roundToNearestCell)
         {
             // GH#5099: round the x-value to the nearest cell
             til::point result;
-            result.x = gsl::narrow_cast<til::CoordType>(std::round(gsl::narrow_cast<double>(pixelPosition.x) / fontSize.width));
-            result.y = pixelPosition.y / fontSize.height;
+            result.x = gsl::narrow_cast<til::CoordType>(std::round(gsl::narrow_cast<double>(position.x) / fontSize.width));
+            result.y = position.y / fontSize.height;
             return result;
         }
         // Convert the location in pixels to characters within the current viewport.
-        return pixelPosition / fontSize;
+        return position / fontSize;
     }
 
     bool ControlInteractivity::_sendMouseEventHelper(const til::point terminalPosition,

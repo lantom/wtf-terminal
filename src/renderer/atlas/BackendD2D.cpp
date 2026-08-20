@@ -41,9 +41,15 @@ void BackendD2D::Render(RenderingPayload& p)
         _handleSettingsUpdate(p);
     }
 
+    _scrollPixelShift = static_cast<f32>(p.scrollPixelShift);
+
     _renderTarget->BeginDraw();
     try
     {
+        // Smooth scrolling: shift the entire frame up by a whole number of pixels.
+        const auto baseTransform = _baseTransform();
+        _renderTarget->SetTransform(&baseTransform);
+
 #if ATLAS_DEBUG_SHOW_DIRTY || ATLAS_DEBUG_DUMP_RENDER_TARGET
         // Invalidating the render target helps with spotting Present1() bugs.
         _renderTarget->Clear();
@@ -62,6 +68,10 @@ void BackendD2D::Render(RenderingPayload& p)
         // we still technically need to call EndDraw() before releasing any resources.
         LOG_IF_FAILED(_renderTarget->EndDraw());
         throw;
+    }
+    {
+        static constexpr D2D1_MATRIX_3X2_F identity{ .m11 = 1, .m22 = 1 };
+        _renderTarget->SetTransform(&identity);
     }
     THROW_IF_FAILED(_renderTarget->EndDraw());
 
@@ -201,7 +211,9 @@ void BackendD2D::_drawBackground(const RenderingPayload& p)
 
     // If the terminal was 120x30 cells and 1200x600 pixels large, this would draw the
     // background by upscaling a 120x30 pixel bitmap to fill the entire render target.
-    const D2D1_RECT_F rect{ 0, 0, static_cast<f32>(p.s->targetSize.x), static_cast<f32>(p.s->targetSize.y) };
+    // The extra _scrollPixelShift covers the strip that the frame-wide translation
+    // exposes at the bottom; the background bitmap has the extra row to fill it.
+    const D2D1_RECT_F rect{ 0, 0, static_cast<f32>(p.s->targetSize.x), static_cast<f32>(p.s->targetSize.y) + _scrollPixelShift };
     _renderTarget->SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_COPY);
     _renderTarget->FillRectangle(&rect, _backgroundBrush.get());
     _renderTarget->SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
@@ -537,14 +549,15 @@ f32 BackendD2D::_drawTextPrepareLineRendition(const RenderingPayload& p, const S
         _renderTarget->PushAxisAlignedClip(&clipRect, D2D1_ANTIALIAS_MODE_ALIASED);
     }
 
+    transform.dy -= _scrollPixelShift;
     _renderTarget->SetTransform(&transform);
     return baselineY;
 }
 
 void BackendD2D::_drawTextResetLineRendition(const ShapedRow* row) const noexcept
 {
-    static constexpr D2D1_MATRIX_3X2_F identity{ .m11 = 1, .m22 = 1 };
-    _renderTarget->SetTransform(&identity);
+    const auto baseTransform = _baseTransform();
+    _renderTarget->SetTransform(&baseTransform);
 
     if (row->lineRendition >= LineRendition::DoubleHeightTop)
     {

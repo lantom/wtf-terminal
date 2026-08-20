@@ -77,6 +77,32 @@ namespace Microsoft::Console::Render
         virtual til::point GetSelectionEnd() const noexcept = 0;
         virtual bool IsUiaDataInitialized() const noexcept = 0;
 
+        // ---- Smooth, pixel-perfect scrolling -------------------------------------
+        // The viewport top is normally an integer buffer row. With smooth scrolling
+        // enabled it may sit part-way into a row; the leftover is reported here as a
+        // whole number of device pixels in [0, cellHeight). The renderer shifts the
+        // whole frame up by this amount on the GPU.
+        virtual til::CoordType GetScrollPixelShift() const noexcept
+        {
+            return 0;
+        }
+
+        // The viewport the renderer should paint. This is GetViewport() grown by the
+        // single extra row needed to fill the strip that GetScrollPixelShift() exposes
+        // at the bottom of the control. Without smooth scrolling it *is* GetViewport().
+        virtual Microsoft::Console::Types::Viewport GetRenderViewport() noexcept
+        {
+            return GetViewport();
+        }
+
+        // Advances any in-flight scroll animation. Called by the renderer once per
+        // frame while the console lock is held. Returns true if the animation has not
+        // settled yet and another frame should be scheduled.
+        virtual bool AdvanceScrollAnimation() noexcept
+        {
+            return false;
+        }
+
         // Ideally this would not be stored on an interface, however ideally IRenderData should not be an interface in the first place.
         // This is because we should have only 1 way how to represent render data across the codebase anyway, and it should
         // be by-value in a struct so that we can snapshot it and release the terminal lock as quickly as possible.

@@ -30,6 +30,7 @@ namespace Microsoft::Console::Render::Atlas
             // * bool will probably not work the way you want it to,
             //   because HLSL uses 32-bit bools and C++ doesn't.
             alignas(sizeof(f32x2)) f32x2 positionScale;
+            alignas(sizeof(f32x2)) f32x2 positionOffset;
 #pragma warning(suppress : 4324) // 'VSConstBuffer': structure was padded due to alignment specifier
         };
 
@@ -45,6 +46,7 @@ namespace Microsoft::Console::Render::Atlas
             alignas(sizeof(f32)) f32 doubleUnderlineWidth = 0;
             alignas(sizeof(f32)) f32 curlyLineHalfHeight = 0;
             alignas(sizeof(f32)) f32 shadedGlyphDotSize = 0;
+            alignas(sizeof(f32)) f32 backgroundOffsetY = 0;
 #pragma warning(suppress : 4324) // 'PSConstBuffer': structure was padded due to alignment specifier
         };
 
@@ -317,6 +319,8 @@ namespace Microsoft::Console::Render::Atlas
         wil::com_ptr<IDWriteRenderingParams1> _textRenderingParams;
 
         til::generation_t _generation;
+        // Smooth scrolling: last value uploaded to the constant buffers.
+        i16 _scrollPixelShift = 0;
         til::generation_t _fontGeneration;
         til::generation_t _miscGeneration;
         u16x2 _targetSize{};

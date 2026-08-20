@@ -216,6 +216,14 @@ void BackendD3D::Render(RenderingPayload& p)
         _handleSettingsUpdate(p);
     }
 
+    // Smooth scrolling: the shift lives in both constant buffers, so re-upload them
+    // whenever it moves. Two 16 byte UpdateSubresource() calls per animated frame.
+    if (_scrollPixelShift != p.scrollPixelShift)
+    {
+        _scrollPixelShift = p.scrollPixelShift;
+        _recreateConstBuffer(p);
+    }
+
     _debugUpdateShaders(p);
 
     // After a Present() the render target becomes unbound.
@@ -583,6 +591,7 @@ void BackendD3D::_recreateConstBuffer(const RenderingPayload& p) const
     {
         VSConstBuffer data{};
         data.positionScale = { 2.0f / p.s->targetSize.x, -2.0f / p.s->targetSize.y };
+        data.positionOffset = { 0.0f, -static_cast<f32>(p.scrollPixelShift) };
         p.deviceContext->UpdateSubresource(_vsConstantBuffer.get(), 0, nullptr, &data, 0, 0);
     }
     {
@@ -599,6 +608,7 @@ void BackendD3D::_recreateConstBuffer(const RenderingPayload& p) const
         // So this ends up using a quarter line width for the dotted glyphs.
         // We use half that for the `cellSize.y`, because usually cells have an aspect ratio of 1:2.
         data.shadedGlyphDotSize = std::max(1.0f, std::roundf(std::max(p.s->font->cellSize.x / 12.0f, p.s->font->cellSize.y / 24.0f)));
+        data.backgroundOffsetY = -static_cast<f32>(p.scrollPixelShift);
         p.deviceContext->UpdateSubresource(_psConstantBuffer.get(), 0, nullptr, &data, 0, 0);
     }
 }

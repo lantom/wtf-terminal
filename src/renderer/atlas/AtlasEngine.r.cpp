@@ -456,12 +456,17 @@ void AtlasEngine::_present()
     RECT scrollRect{};
     POINT scrollOffset{};
 
+    // Smooth scrolling draws every row shifted up by scrollPixelShift, while the dirty
+    // rectangle is accumulated from unshifted row coordinates. Widen it by one cell so
+    // Present1() cannot leave a stale sliver behind at the edges of the dirty band.
+    const til::CoordType smoothScrollSlack = _p.scrollPixelShift != 0 ? _p.s->font->cellSize.y : 0;
+
     // Since rows might be taller than their cells, they might have drawn outside of the viewport.
     RECT dirtyRect{
         .left = std::max(_p.dirtyRectInPx.left, 0),
-        .top = std::max(_p.dirtyRectInPx.top, 0),
+        .top = std::max(_p.dirtyRectInPx.top - smoothScrollSlack, 0),
         .right = std::min<LONG>(_p.dirtyRectInPx.right, fullRect.right),
-        .bottom = std::min<LONG>(_p.dirtyRectInPx.bottom, fullRect.bottom),
+        .bottom = std::min<LONG>(_p.dirtyRectInPx.bottom + smoothScrollSlack, fullRect.bottom),
     };
 
     // Present1() dislikes being called with an empty dirty rect.
@@ -483,7 +488,9 @@ void AtlasEngine::_present()
             // We don't use targetSize.y here, because "height" refers to the bottom coordinate of the last text row
             // in the buffer. We then add the "offsetInPx" (which is negative when scrolling text upwards) and thus
             // end up with a "bottom" value that is the bottom of the last row of text that we haven't invalidated.
-            const auto height = _p.s->viewportCellCount.y * _p.s->font->cellSize.y;
+            // The render viewport may be one row taller than the swap chain (smooth
+            // scrolling), so clamp it to the surface.
+            const auto height = std::min<til::CoordType>(_p.s->viewportCellCount.y * _p.s->font->cellSize.y, _p.s->targetSize.y);
             const auto top = std::max(0, offsetInPx);
             const auto bottom = height + std::min(0, offsetInPx);
 
