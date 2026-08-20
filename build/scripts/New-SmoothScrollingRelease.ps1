@@ -59,12 +59,12 @@ function Get-MSBuildPath {
 
 function Get-WindowsSdkTool([string]$Name) {
     $kitsRoot = (Get-ItemProperty 'HKLM:\Software\Microsoft\Windows Kits\Installed Roots' -Name KitsRoot10).KitsRoot10
-    $candidates = Get-ChildItem (Join-Path $kitsRoot 'bin') -Directory |
+    $candidates = @(Get-ChildItem (Join-Path $kitsRoot 'bin') -Directory |
         Where-Object { $_.Name -match '^10\.' } |
         Sort-Object Name -Descending |
         ForEach-Object { Join-Path $_.FullName "x64\$Name" } |
-        Where-Object { Test-Path $_ }
-    if (-not $candidates) { throw "$Name was not found in any Windows SDK under $kitsRoot." }
+        Where-Object { Test-Path $_ })
+    if ($candidates.Count -eq 0) { throw "$Name was not found in any Windows SDK under $kitsRoot." }
     return $candidates[0]
 }
 
@@ -120,28 +120,39 @@ if (-not $cert) {
 $cerPath = Join-Path $OutputDirectory "$baseName.cer"
 Export-Certificate -Cert $cert -FilePath $cerPath -Force | Out-Null
 
-# The manifest publisher has to match the signing certificate or signtool refuses. The
-# repo ships a Microsoft publisher, so patch the layout copy before packing.
-$layoutManifest = Join-Path $layoutRoot 'AppxManifest.xml'
-$manifestXml = [xml](Get-Content $layoutManifest)
-if ($manifestXml.Package.Identity.Publisher -ne $cert.Subject) {
-    Write-Host "    rewriting manifest publisher to $($cert.Subject)"
-    $manifestXml.Package.Identity.Publisher = $cert.Subject
-    $manifestXml.Save($layoutManifest)
-}
-
 # --------------------------------------------------------------------------- the MSIX
 Write-Host '==> Packing the MSIX' -ForegroundColor Cyan
 $makeappx = Get-WindowsSdkTool 'MakeAppx.exe'
 $signtool = Get-WindowsSdkTool 'SignTool.exe'
 $msixPath = Join-Path $OutputDirectory "$baseName.msix"
 
-& $makeappx pack /o /d $layoutRoot /p $msixPath | Write-Verbose
-if ($LASTEXITCODE -ne 0) { throw "MakeAppx failed with exit code $LASTEXITCODE." }
+# Pack from a copy: the manifest publisher has to be rewritten to match the signing
+# certificate (signtool refuses otherwise), and the layout carries build leftovers that
+# have no business in a shipped package. Neither should touch the build output.
+$packRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('wtfpack_' + [guid]::NewGuid().ToString('N'))
+Copy-Item -Path $layoutRoot -Destination $packRoot -Recurse
+try {
+    Get-ChildItem $packRoot -Recurse -File -Include '*.pdb', '*.lib', '*.exp', '*.ipdb', '*.iobj', '*.ilk' |
+        Remove-Item -Force
+
+    $packManifest = Join-Path $packRoot 'AppxManifest.xml'
+    $manifestXml = [xml](Get-Content $packManifest)
+    if ($manifestXml.Package.Identity.Publisher -ne $cert.Subject) {
+        Write-Host "    rewriting manifest publisher to $($cert.Subject)"
+        $manifestXml.Package.Identity.Publisher = $cert.Subject
+        $manifestXml.Save($packManifest)
+    }
+
+    & $makeappx pack /o /d $packRoot /p $msixPath | Write-Verbose
+    if ($LASTEXITCODE -ne 0) { throw "MakeAppx failed with exit code $LASTEXITCODE." }
+}
+finally {
+    Remove-Item $packRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 & $signtool sign /fd SHA256 /a /sha1 $cert.Thumbprint $msixPath | Write-Verbose
 if ($LASTEXITCODE -ne 0) { throw "SignTool failed with exit code $LASTEXITCODE." }
-Write-Host "    $msixPath"
+Write-Host "    $msixPath  ($([int]((Get-Item $msixPath).Length / 1MB)) MB)"
 
 # ---------------------------------------------------------------------- portable build
 Write-Host '==> Building the portable distribution' -ForegroundColor Cyan
@@ -150,31 +161,128 @@ if (-not (Test-Path $xamlAppx)) {
     throw "The Microsoft.UI.Xaml AppX is missing at $xamlAppx. Restore NuGet packages first."
 }
 
-& (Join-Path $PSScriptRoot 'New-UnpackagedTerminalDistribution.ps1') `
+# New-UnpackagedTerminalDistribution.ps1 reads $Verbose, which strict mode refuses to
+# resolve when it is not set. Strict mode flows into the callee, so lift it for the call.
+Set-StrictMode -Off
+# In -TerminalLayout mode the script leaves the finished tree in a temp directory and
+# returns it; it only zips when combining two AppX files. So take it from there.
+$portableSource = & (Join-Path $PSScriptRoot 'New-UnpackagedTerminalDistribution.ps1') `
     -TerminalLayout $layoutRoot `
     -XamlAppX $xamlAppx `
     -Destination $OutputDirectory `
     -MakeAppxPath $makeappx `
     -PortableMode
+Set-StrictMode -Version Latest
 
-$portableZip = Get-ChildItem $OutputDirectory -Filter '*.zip' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if (-not $portableSource) { throw 'The portable distribution was not produced.' }
+
+$portableDir = Join-Path $OutputDirectory "${baseName}_portable"
+if (Test-Path $portableDir) { Remove-Item $portableDir -Recurse -Force }
+New-Item -ItemType Directory -Path $portableDir | Out-Null
+Copy-Item -Path (Join-Path $portableSource.FullName '*') -Destination $portableDir -Recurse
+
+# Debug symbols dwarf the actual program (the PDBs are ~750 MB); they have no place in
+# a distribution. They stay in bind\Release for anyone who needs to debug a crash.
+Get-ChildItem $portableDir -Recurse -File -Include '*.pdb', '*.ilk', '*.exp', '*.lib', '*.ipdb', '*.iobj' |
+    Remove-Item -Force
+
+# The temp tree lives one level above what the script hands back.
+Remove-Item (Split-Path -Parent $portableSource.FullName) -Recurse -Force -ErrorAction SilentlyContinue
+
+$portableZipPath = Join-Path $OutputDirectory "${baseName}_portable.zip"
+if (Test-Path $portableZipPath) { Remove-Item $portableZipPath -Force }
+Compress-Archive -Path (Join-Path $portableDir '*') -DestinationPath $portableZipPath
+$portableZip = Get-Item $portableZipPath
+Write-Host "    $portableZipPath  ($([int]($portableZip.Length / 1MB)) MB)"
 
 # ------------------------------------------------------------------------- install aid
+$thumbprint = $cert.Thumbprint
+$packageName = $manifest.Package.Identity.Name
+
 $installScript = Join-Path $OutputDirectory 'Install-WtfTerminal.ps1'
 @"
-# Installs the smooth-scrolling Windows Terminal build produced by
-# build\scripts\New-SmoothScrollingRelease.ps1.
-#
-# Run this from an elevated PowerShell: the signing certificate has to go into the
-# machine-wide TrustedPeople store before Windows will accept a side-loaded MSIX.
+<#
+.SYNOPSIS
+    Installs the smooth-scrolling Windows Terminal build.
+
+.DESCRIPTION
+    The package is signed with a self-signed certificate, so the certificate has to be
+    trusted machine-wide before Windows will accept the MSIX. Both steps need
+    elevation; the script elevates itself.
+
+.PARAMETER Uninstall
+    Removes the package and the certificate again.
+#>
+[CmdletBinding()]
+param([switch]`$Uninstall)
+
 `$ErrorActionPreference = 'Stop'
-`$here = Split-Path -Parent `$MyInvocation.MyCommand.Path
 
-Import-Certificate -FilePath (Join-Path `$here '$baseName.cer') -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null
-Add-AppxPackage -Path (Join-Path `$here '$baseName.msix')
+`$here        = Split-Path -Parent `$MyInvocation.MyCommand.Path
+`$msix        = Join-Path `$here '$baseName.msix'
+`$cer         = Join-Path `$here '$baseName.cer'
+`$dependency  = Join-Path `$here 'Microsoft.UI.Xaml.2.8.appx'
+`$packageName = '$packageName'
+`$thumbprint  = '$thumbprint'
 
-Write-Host 'Installed. Look for "Terminal (Smooth Scrolling)" in the Start menu.'
+function Test-Admin {
+    `$id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    (New-Object Security.Principal.WindowsPrincipal(`$id)).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+if (-not (Test-Admin)) {
+    Write-Host 'Elevation is required; relaunching...' -ForegroundColor Yellow
+    `$argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "```"`$PSCommandPath```"")
+    if (`$Uninstall) { `$argList += '-Uninstall' }
+    Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList `$argList
+    return
+}
+
+if (`$Uninstall) {
+    Get-AppxPackage -Name `$packageName | ForEach-Object {
+        Write-Host "Removing `$(`$_.PackageFullName)..." -ForegroundColor Cyan
+        Remove-AppxPackage -Package `$_.PackageFullName
+    }
+    Get-ChildItem Cert:\LocalMachine\TrustedPeople |
+        Where-Object Thumbprint -eq `$thumbprint |
+        ForEach-Object {
+            Write-Host 'Removing the signing certificate...' -ForegroundColor Cyan
+            Remove-Item `$_.PSPath -Force
+        }
+    Write-Host 'Done.' -ForegroundColor Green
+    return
+}
+
+foreach (`$f in @(`$msix, `$cer)) {
+    if (-not (Test-Path `$f)) { throw "Missing file: `$f" }
+}
+
+if (-not (Get-ChildItem Cert:\LocalMachine\TrustedPeople |
+          Where-Object Thumbprint -eq `$thumbprint)) {
+    Write-Host 'Trusting the signing certificate...' -ForegroundColor Cyan
+    Import-Certificate -FilePath `$cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null
+} else {
+    Write-Host 'The signing certificate is already trusted.' -ForegroundColor DarkGray
+}
+
+`$addArgs = @{ Path = `$msix }
+if ((Test-Path `$dependency) -and -not (Get-AppxPackage -Name 'Microsoft.UI.Xaml.2.8')) {
+    `$addArgs['DependencyPath'] = `$dependency
+}
+
+Write-Host 'Installing...' -ForegroundColor Cyan
+Add-AppxPackage @addArgs
+
+`$installed = Get-AppxPackage -Name `$packageName
+if (-not `$installed) { throw 'The installation did not take.' }
+
+Write-Host "Installed: `$(`$installed.PackageFullName)" -ForegroundColor Green
+Write-Host 'Start it from the Start menu, or with: wtd' -ForegroundColor Green
 "@ | Set-Content -Path $installScript -Encoding UTF8
+
+# The WinUI 2.8 dependency, so the package installs on a machine without it.
+Copy-Item $xamlAppx (Join-Path $OutputDirectory 'Microsoft.UI.Xaml.2.8.appx') -Force
 
 Write-Host ''
 Write-Host 'Done.' -ForegroundColor Green

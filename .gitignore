@@ -286,3 +286,5 @@ profiles.json
 
 # MSBuildCache
 /MSBuildCacheLogs/
+# Build artifacts produced by build/scripts/New-SmoothScrollingRelease.ps1
+/dist/
