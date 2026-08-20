@@ -17,8 +17,10 @@ The shift is an **integer number of device pixels**, never a fraction. That keep
 glyph rasterization identical to today (crisp, no sub-pixel blur) - "pixel perfect".
 
 To fill the strip exposed at the bottom by the shift, the renderer paints one extra
-row: `GetRenderViewport()` is `GetViewport()` grown by one row whenever the shift is
-non-zero (and the buffer has a row to spare). `GetViewport()` itself is untouched, so
+row: `GetRenderViewport()` is `GetViewport()` grown by one row for as long as smooth
+scrolling is on (and the buffer has a row to spare). It stays grown even on frames where
+the shift happens to be zero, because a changing row count makes AtlasEngine reallocate
+its row cache and re-shape every row - not something to do at 120 frames a second. `GetViewport()` itself is untouched, so
 conpty size, scrollbar range, page-up size and hit testing keep their old meaning.
 
 ## Where the animation lives

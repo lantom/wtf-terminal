@@ -175,10 +175,27 @@
     </Link>
   </ItemDefinitionGroup>
 
-  <!-- Work around the Windows Store platform not specifying a TargetMachine for static libraries -->
+  <!-- Work around the Windows Store platform not specifying a TargetMachine for static libraries.
+       Without this, lib.exe warns LNK4068 and defaults to x86, which then fails to take the
+       x64/ARM64 objects with LNK1112. It bites every AppContainer static library. -->
   <ItemDefinitionGroup Condition="'$(Platform)'=='Win32'">
     <Lib>
       <TargetMachine>MachineX86</TargetMachine>
+    </Lib>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Platform)'=='x64'">
+    <Lib>
+      <TargetMachine>MachineX64</TargetMachine>
+    </Lib>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Platform)'=='ARM64'">
+    <Lib>
+      <TargetMachine>MachineARM64</TargetMachine>
+    </Lib>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Platform)'=='ARM64EC'">
+    <Lib>
+      <TargetMachine>MachineARM64EC</TargetMachine>
     </Lib>
   </ItemDefinitionGroup>
 

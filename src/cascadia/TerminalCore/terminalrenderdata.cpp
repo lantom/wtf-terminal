@@ -13,20 +13,30 @@ Viewport Terminal::GetViewport() noexcept
     return _GetVisibleViewport();
 }
 
-// The viewport the renderer paints. When the frame is shifted up by a fraction of a row
-// (smooth scrolling), a strip is exposed at the bottom of the control, so we hand the
-// renderer one extra row to fill it with. GetViewport() itself keeps reporting the real
-// viewport, which is what the connection size, the scrollbar and hit testing rely on.
+// The viewport the renderer paints. Shifting the frame up by a fraction of a row (smooth
+// scrolling) exposes a strip at the bottom of the control, so we hand the renderer one
+// extra row to fill it with. GetViewport() itself keeps reporting the real viewport,
+// which is what the connection size, the scrollbar and hit testing rely on.
+//
+// The extra row is included for as long as smooth scrolling is on, not just while the
+// shift happens to be non-zero: a changing row count makes AtlasEngine throw away and
+// re-shape every row, which is the last thing we want at 120 frames a second.
 Viewport Terminal::GetRenderViewport() noexcept
 {
     const auto viewport = _GetVisibleViewport();
 
-    if (_scrollPixelShift <= 0)
+    if (!_smoothScrollEnabled || _inAltBuffer())
     {
         return viewport;
     }
 
     const auto dimensions = viewport.Dimensions();
+    // Never hand the renderer a row that is not in the buffer.
+    if (viewport.BottomExclusive() >= GetBufferHeight())
+    {
+        return viewport;
+    }
+
     return Viewport::FromDimensions(viewport.Origin(), { dimensions.width, dimensions.height + 1 });
 }
 

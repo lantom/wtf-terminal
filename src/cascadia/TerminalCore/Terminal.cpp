@@ -1222,6 +1222,12 @@ double Terminal::GetSmoothScrollCurrentRow() const noexcept
 
 til::CoordType Terminal::_MaxScrollOffset() const noexcept
 {
+    // SetFontInfo() runs before Create() has made a buffer, so this has to cope with
+    // there not being one yet.
+    if (!_mainBuffer)
+    {
+        return 0;
+    }
     return std::max(0, _activeBuffer().GetSize().Height() - _mutableViewport.Height());
 }
 

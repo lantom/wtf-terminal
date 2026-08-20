@@ -41,8 +41,9 @@ See [DESIGN.md](DESIGN.md) for the full picture. The short version:
   pixels** of leftover (`0 <= shift < cellHeight`). Because the shift is a whole pixel,
   glyphs are rasterized exactly as before - no sub-pixel blur. That is the "pixel
   perfect" part.
-* The renderer paints one extra row while the shift is non-zero, to fill the strip the
-  shift exposes at the bottom.
+* The renderer paints one extra row, to fill the strip the shift exposes at the bottom.
+  It does so for as long as smooth scrolling is on rather than only while the shift is
+  non-zero, because a changing row count would make AtlasEngine re-shape every row.
 * The shift is applied **on the GPU**: `AtlasEngine`'s vertex shader translates every
   quad, and its pixel shader offsets the background cell lookup by the same amount. No
   extra draw calls, no extra passes, no re-shaping of cached rows.
@@ -52,30 +53,35 @@ See [DESIGN.md](DESIGN.md) for the full picture. The short version:
 
 ## Building
 
-Prerequisites: Visual Studio 2022 (or the 2022 Build Tools) with the C++ workload,
-the Windows 11 SDK 10.0.26100, and the .NET desktop / UWP build tools. See
-[.vsconfig](../../.vsconfig).
+**Visual Studio 2026 (18.x) is required**, as it is upstream: `build/pipelines/ci.yml`
+builds on `SHINE-VS18-Latest` and `src/common.build.pre.props` selects the **v145**
+toolset whenever `VisualStudioVersion >= 18.0`. Visual Studio 2022 does not work - its
+XAML targets combined with the Windows SDK 10.0.26100 XAML compiler fail on
+`Microsoft.Terminal.Settings.Editor` with an internal `WMC9999` error, on unmodified
+upstream sources as much as on this fork.
+
+The Build Tools are enough; get them from
+<https://aka.ms/vs/18/stable/vs_BuildTools.exe> and install the C++, .NET desktop and
+UWP build-tools workloads plus the Windows 11 SDK 10.0.26100. See
+[.vsconfig](../../.vsconfig) for the full component list.
 
 ```powershell
-# vcpkg (a full clone - its versioning needs the history)
+# vcpkg - a full clone, its versioning needs the history
 git clone https://github.com/microsoft/vcpkg.git dep\vcpkg
 dep\vcpkg\bootstrap-vcpkg.bat
 
-# packages.config dependencies
-nuget restore .nuget\packages.config   -PackagesDirectory packages
-nuget restore build\packages.config    -PackagesDirectory packages
+# packages.config dependencies (PackageReference restore does not cover these)
+nuget restore .nuget\packages.config    -PackagesDirectory packages
+nuget restore build\packages.config     -PackagesDirectory packages
 nuget restore dep\nuget\packages.config -PackagesDirectory packages
 
-# Visual Studio 2022 ships the v143 toolset; the overlay triplets default to v145.
-$env:VCPKG_PLATFORM_TOOLSET = 'v143'
 $env:MSBUILDENABLESLNXSUPPORT = '1'
-
 msbuild terminal.slnf -p:Configuration=Release -p:Platform=x64 -m
 ```
 
 `terminal.slnf` is `OpenConsole.slnx` minus three `net8.0-windows` projects (the
-embeddable WPF control and a stress tool) whose targeting packs are not on the
-repository's NuGet feed. Nothing in Windows Terminal itself depends on them.
+embeddable WPF control, its test app and a stress tool) whose targeting packs are not on
+the repository's NuGet feed. Nothing in Windows Terminal itself depends on them.
 
 ## Packaging
 

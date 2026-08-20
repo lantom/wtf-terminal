@@ -192,8 +192,9 @@ void SmoothScrollTest::RenderViewportGrowsByExactlyOneRow()
         VERIFY_ARE_EQUAL(viewport.Origin(), renderViewport.Origin(), L"only the height may differ");
         VERIFY_ARE_EQUAL(viewport.Width(), renderViewport.Width());
 
-        const auto expected = viewport.Height() + (_term->GetScrollPixelShift() > 0 ? 1 : 0);
-        VERIFY_ARE_EQUAL(expected, renderViewport.Height());
+        // The extra row is present for the whole animation, not only on the frames
+        // where the shift happens to be non-zero.
+        VERIFY_ARE_EQUAL(viewport.Height() + 1, renderViewport.Height());
 
         // The extra row must exist in the buffer, otherwise the renderer would read
         // past the end of it.
@@ -286,7 +287,6 @@ void SmoothScrollTest::TargetIsClampedToTheBuffer()
     _runToCompletion();
     VERIFY_ARE_EQUAL(_term->ViewStartIndex(), _term->GetScrollOffset(), L"cannot scroll below the last row");
     VERIFY_ARE_EQUAL(0, _term->GetScrollPixelShift(), L"resting at the bottom leaves no shift behind");
-    VERIFY_ARE_EQUAL(_term->GetViewport().Dimensions(), _term->GetRenderViewport().Dimensions());
 }
 
 void SmoothScrollTest::DisablingSnapsBackToAWholeRow()
@@ -302,7 +302,7 @@ void SmoothScrollTest::DisablingSnapsBackToAWholeRow()
     _term->SetSmoothScrollingSettings(false, 1.0);
 
     VERIFY_ARE_EQUAL(0, _term->GetScrollPixelShift(), L"turning the feature off must not leave a partial row on screen");
-    VERIFY_ARE_EQUAL(_term->GetViewport().Dimensions(), _term->GetRenderViewport().Dimensions());
+    VERIFY_ARE_EQUAL(_term->GetViewport().Dimensions(), _term->GetRenderViewport().Dimensions(), L"and the renderer goes back to painting exactly the viewport");
     VERIFY_IS_FALSE(_term->AdvanceScrollAnimation());
 }
 

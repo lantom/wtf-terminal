@@ -29,6 +29,7 @@ namespace ControlUnitTests
 
         TEST_METHOD(TestAdjustAcrylic);
         TEST_METHOD(TestScrollWithMouse);
+        TEST_METHOD(SmoothScrollingMovesTheViewportOverTime);
 
         TEST_METHOD(CreateSubsequentSelectionWithDragging);
         TEST_METHOD(ScrollWithSelection);
@@ -62,6 +63,11 @@ namespace ControlUnitTests
             Log::Comment(L"Create settings object");
             auto settings = winrt::make_self<MockControlSettings>();
             VERIFY_IS_NOT_NULL(settings);
+
+            // These tests assert that a scroll lands on its target within the same call.
+            // That is what smooth scrolling deliberately stops doing, so keep them on the
+            // classic path; SmoothScrollingMovesTheViewportOverTime covers the other one.
+            settings->SmoothScrolling(false);
 
             Log::Comment(L"Create connection object");
             auto conn = winrt::make_self<MockConnection>();
@@ -193,6 +199,59 @@ namespace ControlUnitTests
                                       Core::Point{ 0, 0 },
                                       buttonState);
         }
+    }
+
+    // With smooth scrolling on, a wheel notch sets a target instead of moving the
+    // viewport outright; the viewport glides there over the following frames. The
+    // renderer normally pumps that animation once per presented frame - here we pump it
+    // by hand through the same public entry point.
+    void ControlInteractivityTests::SmoothScrollingMovesTheViewportOverTime()
+    {
+        BEGIN_TEST_METHOD_PROPERTIES()
+            TEST_METHOD_PROPERTY(L"IsolationLevel", L"Method")
+        END_TEST_METHOD_PROPERTIES()
+
+        auto [settings, conn] = _createSettingsAndConnection();
+        settings->SmoothScrolling(true);
+        settings->SmoothScrollingSpeed(1.0);
+
+        auto [core, interactivity] = _createCoreAndInteractivity(*settings, *conn);
+        _standardInit(core, interactivity);
+        interactivity->_rowsToScroll = 1;
+
+        // Fill the scrollback so that there is somewhere to scroll to.
+        for (auto i = 0; i < 40; ++i)
+        {
+            conn->WriteInput(winrt_wstring_to_array_view(L"Foo\r\n"));
+        }
+
+        const auto before = core->ScrollOffset();
+        VERIFY_ARE_EQUAL(21, before);
+        VERIFY_ARE_EQUAL(0, core->ScrollPixelShift());
+
+        Log::Comment(L"One wheel notch up must not move the viewport straight away");
+        const Control::MouseButtonState buttonState{};
+        const auto modifiers = ControlKeyStates();
+        interactivity->MouseWheel(modifiers,
+                                  Core::Point{ 0, WHEEL_DELTA },
+                                  Core::Point{ 0, 0 },
+                                  buttonState);
+        VERIFY_ARE_EQUAL(before, core->ScrollOffset(), L"the viewport has not caught up yet");
+
+        Log::Comment(L"Pumping frames must land it exactly one row up");
+        // The animation is driven off the wall clock, so give it real time to settle.
+        // At speed 1.0 it needs roughly half a second; two is a generous ceiling.
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        auto running = true;
+        while (running && std::chrono::steady_clock::now() < deadline)
+        {
+            const auto lock = core->_terminal->LockForWriting();
+            running = core->_terminal->AdvanceScrollAnimation();
+        }
+
+        VERIFY_IS_FALSE(running, L"the animation has to settle, not run forever");
+        VERIFY_ARE_EQUAL(before - 1, core->ScrollOffset());
+        VERIFY_ARE_EQUAL(0, core->ScrollPixelShift(), L"a whole-row target settles on a whole row");
     }
 
     void ControlInteractivityTests::TestScrollWithMouse()
