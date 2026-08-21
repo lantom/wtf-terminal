@@ -30,6 +30,7 @@ namespace ControlUnitTests
         TEST_METHOD(TestAdjustAcrylic);
         TEST_METHOD(TestScrollWithMouse);
         TEST_METHOD(SmoothScrollingMovesTheViewportOverTime);
+        TEST_METHOD(SmoothScrollingAccumulatesRapidNotches);
 
         TEST_METHOD(CreateSubsequentSelectionWithDragging);
         TEST_METHOD(ScrollWithSelection);
@@ -252,6 +253,67 @@ namespace ControlUnitTests
         VERIFY_IS_FALSE(running, L"the animation has to settle, not run forever");
         VERIFY_ARE_EQUAL(before - 1, core->ScrollOffset());
         VERIFY_ARE_EQUAL(0, core->ScrollPixelShift(), L"a whole-row target settles on a whole row");
+    }
+
+    // Spinning the wheel produces notches far faster than frames get rendered, so every
+    // notch after the first arrives while the animation is still running. Each one has to
+    // add to what the previous ones asked for. Getting this wrong makes the view crawl:
+    // the accumulator keeps restarting from the lagging on-screen row and most of the
+    // gesture is thrown away.
+    void ControlInteractivityTests::SmoothScrollingAccumulatesRapidNotches()
+    {
+        BEGIN_TEST_METHOD_PROPERTIES()
+            TEST_METHOD_PROPERTY(L"IsolationLevel", L"Method")
+        END_TEST_METHOD_PROPERTIES()
+
+        auto [settings, conn] = _createSettingsAndConnection();
+        settings->SmoothScrolling(true);
+        settings->SmoothScrollingSpeed(1.0);
+
+        auto [core, interactivity] = _createCoreAndInteractivity(*settings, *conn);
+        _standardInit(core, interactivity);
+
+        constexpr auto rowsPerNotch = 3;
+        constexpr auto notches = 5;
+        interactivity->_rowsToScroll = rowsPerNotch;
+
+        for (auto i = 0; i < 100; ++i)
+        {
+            conn->WriteInput(winrt_wstring_to_array_view(L"Foo\r\n"));
+        }
+
+        const auto start = core->ScrollOffset();
+        VERIFY_IS_GREATER_THAN(start, notches * rowsPerNotch, L"there has to be room to scroll into");
+
+        const Control::MouseButtonState buttonState{};
+        const auto modifiers = ControlKeyStates();
+
+        // Five notches back to back, with no frame rendered in between - the animation
+        // is deliberately left mid-flight.
+        for (auto i = 0; i < notches; ++i)
+        {
+            interactivity->MouseWheel(modifiers,
+                                      Core::Point{ 0, WHEEL_DELTA },
+                                      Core::Point{ 0, 0 },
+                                      buttonState);
+        }
+
+        const auto expected = start - (notches * rowsPerNotch);
+        const auto target = core->ScrollTargetRow();
+        Log::Comment(String().Format(L"start=%d target=%f expected=%d", start, target, expected));
+        VERIFY_ARE_EQUAL(expected, static_cast<int>(std::lround(target)), L"every notch has to count");
+
+        // And the viewport must actually get there.
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        auto running = true;
+        while (running && std::chrono::steady_clock::now() < deadline)
+        {
+            const auto lock = core->_terminal->LockForWriting();
+            running = core->_terminal->AdvanceScrollAnimation();
+        }
+
+        VERIFY_IS_FALSE(running, L"the animation has to settle");
+        VERIFY_ARE_EQUAL(expected, core->ScrollOffset());
     }
 
     void ControlInteractivityTests::TestScrollWithMouse()

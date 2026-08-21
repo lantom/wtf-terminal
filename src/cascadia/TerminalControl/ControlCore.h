@@ -209,6 +209,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         void UserScrollViewport(const int viewTop);
         void SmoothScrollToRow(const double viewTop);
         bool SmoothScrollingEnabled() const;
+        double ScrollTargetRow() const;
         til::CoordType ScrollPixelShift() const;
 
         void ClearBuffer(Control::ClearBufferType clearType);

@@ -46,6 +46,19 @@ Exponential smoothing is used because repeated wheel events simply move the targ
 there is no queue of animations to reconcile, and the result is a critically damped,
 paper-like glide. `kBaseTau = 90 ms` at speed 1.0.
 
+## The wheel accumulator
+
+`ControlInteractivity` accumulates fractional rows across wheel events so that precision
+trackpads, whose deltas are smaller than a row, still add up (GH#9955.b). It resynchronises
+that accumulator whenever it disagrees with the core, in case something else moved the
+viewport underneath it.
+
+That comparison has to be against where the core is *heading*, not against what is on
+screen. Those are the same thing without smooth scrolling, but with it they differ for
+the whole length of the animation - so comparing against the rendered row makes every
+notch after the first throw away what the previous ones accumulated. Five notches then
+move one notch worth. `ControlCore::ScrollTargetRow()` exists for this.
+
 ## GPU side
 `AtlasEngine::UpdateScrollPixelShift()` carries the shift into the rendering payload.
 * `BackendD3D` - the vertex shader translates every quad except the full-screen

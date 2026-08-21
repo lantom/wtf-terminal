@@ -767,6 +767,16 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         return _terminal->IsSmoothScrollingEnabled();
     }
 
+    // Where the viewport is *heading*. With smooth scrolling that is ahead of
+    // ScrollOffset(), which reports what is on screen right now.
+    double ControlCore::ScrollTargetRow() const
+    {
+        const auto lock = _terminal->LockForReading();
+        return _terminal->IsSmoothScrollingEnabled() ?
+                   _terminal->GetSmoothScrollTargetRow() :
+                   static_cast<double>(_terminal->GetScrollOffset());
+    }
+
     // How far up the rendered frame is currently shifted, in device pixels. Hit testing
     // has to add this to the mouse position to land on the row the user actually sees.
     til::CoordType ControlCore::ScrollPixelShift() const

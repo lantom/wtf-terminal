@@ -613,11 +613,16 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         // underneath us. We wouldn't know - we don't want the overhead of
         // another ScrollPositionChanged handler. If the scrollbar should be
         // somewhere other than where it is currently, then start from that row.
-        const auto currentInternalRow = std::lround(_internalScrollbarPosition);
-        const auto currentCoreRow = _core->ScrollOffset();
-        const auto currentOffset = currentInternalRow == currentCoreRow ?
+        //
+        // The comparison is against where the core is *heading*, not against what is
+        // on screen. With smooth scrolling those differ for as long as the animation
+        // runs, and taking the on-screen row would throw away everything the previous
+        // notches accumulated - every notch would restart from the lagging position and
+        // the view would crawl instead of scrolling.
+        const auto currentCoreRow = _core->ScrollTargetRow();
+        const auto currentOffset = std::abs(_internalScrollbarPosition - currentCoreRow) < 0.5 ?
                                        _internalScrollbarPosition :
-                                       currentCoreRow;
+                                       static_cast<float>(currentCoreRow);
 
         // negative = down, positive = up
         // However, for us, the signs are flipped.
