@@ -744,11 +744,11 @@ namespace winrt::Microsoft::Terminal::Control::implementation
 
     // Like UserScrollViewport(), but the target may sit between two rows. With smooth
     // scrolling enabled the viewport glides there over the next few frames.
-    void ControlCore::SmoothScrollToRow(const double viewTop)
+    void ControlCore::SmoothScrollToRow(const double viewTop, const bool animate)
     {
         {
             const auto lock = _terminal->LockForWriting();
-            _terminal->SmoothScrollToRow(viewTop);
+            _terminal->SmoothScrollToRow(viewTop, animate);
         }
 
         // GH#20219: re-evaluate if we're hovering over a hyperlink after scrolling

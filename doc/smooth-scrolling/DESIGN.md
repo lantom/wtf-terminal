@@ -26,9 +26,11 @@ conpty size, scrollbar range, page-up size and hit testing keep their old meanin
 ## Where the animation lives
 `Microsoft::Terminal::Core::Terminal` owns the animation state:
 
-    _scrollPositionPx   double, current viewport top in pixels
-    _scrollTargetPx     double, where we are heading
-    _smoothScrollSpeed  double, user setting
+    _smoothScrollCurrent  double, viewport offset now, in fractional rows
+    _smoothScrollTarget   double, where we are heading
+    _smoothScrollElapsed  double, seconds since the animation started
+    _smoothScrollCurve    ScrollAnimationCurve, the browser curve
+    _smoothScrollSpeed    double, user setting
 
 Advancing happens on the **render thread**, inside `Renderer::_PaintFrame()` while the
 terminal lock is held (`IRenderData::AdvanceScrollAnimation()`). If the animation is
@@ -37,14 +39,112 @@ presents with `Present1(1, ...)`, i.e. v-sync, so the animation is paced by the 
 refresh rate for free - the same mechanism the custom-shader `RequiresContinuousRedraw`
 path already uses. No UI-thread timer is involved.
 
-Easing is exponential smoothing towards the target:
+## The curve: what a browser does
 
-    alpha = 1 - exp(-dt / tau),  tau = kBaseTau / speed
-    pos  += (target - pos) * alpha
+`src/cascadia/TerminalCore/ScrollAnimation.h` is a port of the two pieces of Chromium
+that decide how a scroll moves, kept close enough to the originals to be diffed
+against them:
 
-Exponential smoothing is used because repeated wheel events simply move the target;
-there is no queue of animations to reconcile, and the result is a critically damped,
-paper-like glide. `kBaseTau = 90 ms` at speed 1.0.
+    ui/gfx/geometry/cubic_bezier.cc                -> CubicBezier
+    cc/animation/scroll_offset_animation_curve.cc  -> ScrollAnimationCurve
+
+A wheel notch in Chromium becomes `ScrollType::kMouseWheel`, which is an ease-in-out
+cubic bezier - control points `(0.42, 0)` and `(0.58, 1)` - run with
+`DurationBehavior::kInverseDelta`. Three things follow from that, and all three are
+things an exponential decay does not give you:
+
+**The motion eases in and out.** Position is `initial + (target - initial) * bezier(t)`.
+It starts slowly, is fastest in the middle, and slows to a stop. An exponential decay
+is at its *fastest* on the very first frame and then has an infinite tail it never
+actually reaches; that reads as a lurch followed by a drift.
+
+**A longer scroll runs for less time.** kInverseDelta:
+
+    frames = clamp(14 - distanceInPx / 60, 6, 12)     // at 60Hz
+    seconds = frames / 60 / speed
+
+200 ms for anything up to 120 px, ramping down to 100 ms at 480 px and beyond. So a
+short hop is deliberate and a long flick is quick, instead of everything taking the
+same time.
+
+**A notch that arrives mid-animation preserves velocity.** This is the important one,
+and it is `ScrollOffsetAnimationCurve::UpdateTarget()`. Rather than moving the target
+and letting the position chase it, the curve is *rebuilt* from the position the view is
+at, with its first control point scaled by the speed the view is already travelling at
+(`EaseInOutWithInitialSlope`). The new segment therefore leaves the old one with no
+discontinuity in either position or velocity. That is why a browser scrolled with five
+quick notches looks like one continuous movement rather than five restarts.
+
+`EaseInOutBoundedSegmentDuration()` also caps the new segment at the time it would take
+to coast into the new target at the current speed (times 2.5, "to account for the ease
+out"). Without that, a fast flick that ends on a short hop overshoots and rubber-bands.
+
+`speed` is our own knob, and it simply divides the duration: 2.0 is twice as quick.
+
+### Absolute time, not per-frame integration
+`ValueAt()` takes the total time elapsed since the animation started, so a frame the
+render thread missed lands *further along the same path* instead of bending it. The
+shape of the motion is identical at 60, 120 and 165 Hz, and a stall does not change
+where the scroll ends up. `Terminal::_StepScrollAnimation(dt)` only advances the clock;
+it does not accumulate position.
+
+### The clock is the display's refresh grid
+A browser advances its scroll animations by the compositor's frame time, and that frame
+time *is* a vsync timestamp - every sample of the curve lands on an exact
+refresh-interval grid.
+
+`AdvanceScrollAnimation()` is called at the top of `Renderer::_PaintFrame()` instead, and
+that moment drifts: by how long the previous frame took to build, by when the frame
+latency waitable object fired, by how long the console lock was held. Presenting is
+perfectly paced either way - `Present1(1, ...)` on a waitable swap chain with
+`SetMaximumFrameLatency(1)` sees to that - but the *positions* handed to it were sampled
+off a jittery clock. After the shift is rounded to whole device pixels that turns a clean
+2,3,2,3 px cadence into a random 1,4,2,3, and the motion shimmers.
+
+So `Terminal::_SnapToRefreshGrid()` asks DWM where the grid is
+(`DwmGetCompositionTimingInfo`: `qpcVBlank`, `qpcRefreshPeriod`, re-read a few times a
+second) and rounds the timestamp back onto it, and the step is then taken in whole
+refresh intervals - one normally, more when frames were missed, capped at eight so a
+stall cannot teleport the animation.
+
+### How far one notch goes
+`ControlInteractivity::_browserRowsPerNotch()`. `SPI_GETWHEELSCROLLLINES` is a number of
+*lines*, three by default. A terminal has always read that as three buffer rows; a
+browser reads it as three of its own lines, and a browser line is a fixed 100/3 DIPs
+(Chromium's `kScrollbarPixelsPerLine`), so the same setting moves about twice as far.
+
+That difference matters for more than reach. Covering half the distance in the same
+100-200 ms halves the per-frame step, and since the shift is rounded to whole device
+pixels, a smaller step makes that rounding a larger fraction of it - at ~2 px a frame a
+half-pixel is a visible wobble, at ~4 px it is not. With smooth scrolling on we therefore
+use the browser's definition of a line; with it off we count buffer rows, as before.
+
+### Distances are in device pixels
+Chromium's ramp constants are CSS pixels; we feed the curve device pixels
+(`rows * cellHeight`). On a 100% display those are the same. At 150% a given scroll is
+nominally 1.5x further along the ramp than it would be in a browser, which moves the
+duration by tens of milliseconds at most - not worth plumbing the scale factor down
+into the core for.
+
+## Input that is already continuous is not animated
+A browser animates a wheel *notch* because a notch is a discrete step - "go three
+lines" - with no information about how to get there. It does **not** animate a
+scrollbar drag, a touch pan, or precision-touchpad deltas (`kScrollByPrecisePixel`):
+those are continuous streams that already describe the motion, and animating after them
+only puts the view behind the user's hand.
+
+`Terminal::SmoothScrollToRow(viewTop, animate)` and
+`ControlInteractivity::UpdateScrollbarImmediate()` carry that distinction:
+
+| Input | Animated |
+|---|---|
+| Wheel notch (\|delta\| >= WHEEL_DELTA) | yes |
+| Sub-notch wheel delta (hi-res wheel, precision touchpad) | no |
+| Scrollbar drag | no |
+| Touch pan | no |
+
+The un-animated paths still land on a fractional row, so they get the pixel shift and
+move by less than a row at a time - they are smooth because the *input* is smooth.
 
 ## The wheel accumulator
 
@@ -77,5 +177,5 @@ Global (window) settings, shown on the Settings > Interaction page:
     "smoothScrollingSpeed": double, default 1.0, clamped to [0.1, 5.0]
 
 `smoothScrolling: false` restores the original integer-row behaviour bit for bit:
-the shift stays 0, the render viewport is not grown, and the target is applied
-immediately.
+the shift stays 0, the render viewport is not grown, and every scroll lands on a whole
+row the moment it arrives.

@@ -79,6 +79,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
                         const Control::MouseButtonState state);
 
         void UpdateScrollbar(const float newValue);
+        void UpdateScrollbarImmediate(const float newValue);
 
 #pragma endregion
 
@@ -147,6 +148,9 @@ namespace winrt::Microsoft::Terminal::Control::implementation
 
         unsigned int _numberOfClicks(Core::Point clickPos, Timestamp clickTime);
         void _updateSystemParameterSettings() noexcept;
+
+        void _updateScrollbar(const float newValue, const bool animate);
+        float _browserRowsPerNotch() const;
 
         void _mouseTransparencyHandler(const int32_t mouseDelta) const;
         void _mouseZoomHandler(const int32_t mouseDelta) const;

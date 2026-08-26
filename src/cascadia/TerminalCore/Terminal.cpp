@@ -15,6 +15,10 @@
 #include <til/regex.h>
 #include <winrt/Microsoft.Terminal.Core.h>
 
+// For DwmGetCompositionTimingInfo(), which tells us where the display's refresh grid is.
+#include <dwmapi.h>
+#pragma comment(lib, "dwmapi.lib")
+
 using namespace winrt::Microsoft::Terminal::Core;
 using namespace Microsoft::Terminal::Core;
 using namespace Microsoft::Console;
@@ -1102,6 +1106,9 @@ void Terminal::_PreserveUserScrollOffset(const int viewportDelta) noexcept
         _scrollOffset = newOffset;
         _smoothScrollCurrent = std::clamp(_smoothScrollCurrent + appliedDelta, 0.0, static_cast<double>(maxScrollOffset));
         _smoothScrollTarget = std::clamp(_smoothScrollTarget + appliedDelta, 0.0, static_cast<double>(maxScrollOffset));
+        // The animation, if one is running, has to move with them - the content it is
+        // travelling over just shifted underneath it.
+        _smoothScrollCurve.ApplyAdjustment(appliedDelta);
     }
 }
 
@@ -1130,11 +1137,6 @@ void Terminal::UserScrollViewport(const int viewTop)
 
 #pragma region Smooth scrolling
 
-// The time constant of the scroll animation at speed 1.0, in seconds. After this much
-// time roughly 63% of the remaining distance has been covered. Small enough to feel
-// immediate, large enough to read as motion rather than a jump.
-static constexpr double SmoothScrollBaseTimeConstant = 0.09;
-
 static int64_t SmoothScrollNow() noexcept
 {
     LARGE_INTEGER counter{};
@@ -1152,10 +1154,67 @@ static int64_t SmoothScrollTicksPerSecond() noexcept
     return frequency;
 }
 
-// Sets the viewport top to a fractional buffer row. With smooth scrolling enabled this
-// only moves the animation target; the visible position catches up over the next few
-// frames. Otherwise this is UserScrollViewport() with the row rounded to a whole line.
-void Terminal::SmoothScrollToRow(const double viewTop)
+// Snaps a QueryPerformanceCounter reading back to the most recent vertical blank.
+//
+// A browser advances its scroll animations by the compositor's frame time, which *is* a
+// vsync timestamp: every sample of the curve lands on an exact refresh-interval grid.
+// We are called at the top of Renderer::_PaintFrame() instead, and that moment drifts by
+// however long the previous frame took to build, how long the render thread waited on
+// the frame latency object, and how long it took to get the console lock. Presenting is
+// still perfectly paced - Present1(1, ...) on a waitable swap chain sees to that - but
+// the *positions* we hand it are sampled off a jittery clock, and after the shift is
+// rounded to whole device pixels that turns a clean 2,3,2,3 px cadence into a random
+// 1,4,2,3. That is the shimmer.
+//
+// DWM knows the grid, so ask it: qpcVBlank is the last vertical blank and
+// qpcRefreshPeriod the interval between them. Both are re-read a few times a second
+// rather than every frame - the period is stable, and the phase reference only has to be
+// good to a fraction of a frame.
+int64_t Terminal::_SnapToRefreshGrid(const int64_t nowTicks) noexcept
+{
+    const auto frequency = SmoothScrollTicksPerSecond();
+
+    if (_smoothScrollRefreshPeriod <= 0 || nowTicks - _smoothScrollTimingQueriedAt > frequency / 4)
+    {
+        DWM_TIMING_INFO info{};
+        info.cbSize = sizeof(info);
+        if (SUCCEEDED(DwmGetCompositionTimingInfo(nullptr, &info)) && info.qpcRefreshPeriod > 0)
+        {
+            _smoothScrollRefreshPeriod = gsl::narrow_cast<int64_t>(info.qpcRefreshPeriod);
+            _smoothScrollVBlankRef = gsl::narrow_cast<int64_t>(info.qpcVBlank);
+        }
+        else
+        {
+            // Composition is off, or DWM would not say. 60Hz is a safe grid to assume;
+            // the quantisation still removes most of the jitter.
+            _smoothScrollRefreshPeriod = frequency / 60;
+            _smoothScrollVBlankRef = nowTicks;
+        }
+        _smoothScrollTimingQueriedAt = nowTicks;
+    }
+
+    const auto period = _smoothScrollRefreshPeriod;
+    if (period <= 0)
+    {
+        return nowTicks;
+    }
+
+    // How far past a vertical blank we are, and step back onto it. Modulo of a negative
+    // value would take us forwards, so guard the case where the reference is ahead of us.
+    const auto sinceRef = nowTicks - _smoothScrollVBlankRef;
+    if (sinceRef < 0)
+    {
+        return nowTicks;
+    }
+    return nowTicks - (sinceRef % period);
+}
+
+// Sets the viewport top to a fractional buffer row. With smooth scrolling enabled and
+// animate set, this only moves the animation target; the visible position catches up
+// over the next few frames. animate == false lands there this frame, still with sub-row
+// precision. Without smooth scrolling this is UserScrollViewport() with the row rounded
+// to a whole line.
+void Terminal::SmoothScrollToRow(const double viewTop, const bool animate)
 {
     if (!_smoothScrollEnabled || _inAltBuffer())
     {
@@ -1172,14 +1231,41 @@ void Terminal::SmoothScrollToRow(const double viewTop)
     // mutable viewport, so a smaller viewTop means a larger offset.
     const auto newTarget = std::clamp(realTop - clampedNewTop, 0.0, static_cast<double>(_MaxScrollOffset()));
 
-    if (newTarget == _smoothScrollTarget)
+    if (newTarget == _smoothScrollTarget && (animate || newTarget == _smoothScrollCurrent))
     {
         return;
     }
 
     _smoothScrollTarget = newTarget;
-    // Start measuring time from now. The first tick of a fresh animation must not
-    // consume the (potentially very long) gap since the previous one.
+
+    if (!animate)
+    {
+        // Continuous input: go there now, sub-row precision and all. This is what a
+        // browser does with a scrollbar drag or a touch pan - animating it would only
+        // add lag to something the user is already moving by hand.
+        _smoothScrollCurve.Reset();
+        _smoothScrollElapsed = 0.0;
+        _smoothScrollLastTick = 0;
+        _smoothScrollCurrent = newTarget;
+        _ApplySmoothScrollPosition();
+        _activeBuffer().TriggerScroll();
+        return;
+    }
+
+    const auto pixelsPerRow = static_cast<double>(std::max(1, _fontInfo.GetSize().height));
+    if (_smoothScrollCurve.IsRunning())
+    {
+        // Retarget the curve in flight, carrying the current velocity over into it.
+        _smoothScrollCurve.UpdateTarget(_smoothScrollElapsed, newTarget, pixelsPerRow, _smoothScrollSpeed);
+    }
+    else
+    {
+        _smoothScrollElapsed = 0.0;
+        _smoothScrollCurve.Start(_smoothScrollCurrent, newTarget, pixelsPerRow, _smoothScrollSpeed);
+    }
+
+    // Start the clock at the input event, not at the first frame after it. Otherwise
+    // every scroll loses however long it takes the render thread to wake up.
     if (_smoothScrollLastTick == 0)
     {
         _smoothScrollLastTick = SmoothScrollNow();
@@ -1240,6 +1326,8 @@ void Terminal::_SetScrollOffsetImmediate(const til::CoordType offset) noexcept
     _smoothScrollTarget = static_cast<double>(offset);
     _scrollPixelShift = 0;
     _smoothScrollLastTick = 0;
+    _smoothScrollElapsed = 0.0;
+    _smoothScrollCurve.Reset();
 }
 
 // Recomputes _scrollOffset and _scrollPixelShift from _smoothScrollCurrent.
@@ -1295,21 +1383,31 @@ bool Terminal::AdvanceScrollAnimation() noexcept
         return false;
     }
 
-    const auto now = SmoothScrollNow();
+    // Sample the curve on the refresh grid rather than wherever this frame happened to
+    // start being built. See _SnapToRefreshGrid().
+    const auto now = _SnapToRefreshGrid(SmoothScrollNow());
     const auto previous = _smoothScrollLastTick;
     _smoothScrollLastTick = now;
 
-    // First tick of an animation: just record the timestamp and draw the current frame.
-    // This also guards against a bogus delta if the render thread was stalled.
     auto dt = 0.0;
     if (previous != 0 && now > previous)
     {
-        dt = std::min(0.1, static_cast<double>(now - previous) / static_cast<double>(SmoothScrollTicksPerSecond()));
+        const auto period = std::max<int64_t>(1, _smoothScrollRefreshPeriod);
+        // Advance by a whole number of refresh intervals. Less than one means the render
+        // thread woke early; more than one means we missed frames, and the curve is a
+        // function of absolute time so landing further along it is exactly right. The cap
+        // keeps a long stall - a drag, a sleep - from teleporting the animation.
+        auto frames = (now - previous + period / 2) / period;
+        frames = std::clamp<int64_t>(frames, 1, 8);
+        dt = static_cast<double>(frames) * static_cast<double>(period) / static_cast<double>(SmoothScrollTicksPerSecond());
     }
 
     return _StepScrollAnimation(dt);
 }
 
+// Advances the curve to `deltaSeconds` further along and reads the new position off
+// it. The position is a function of the total elapsed time, so a long frame lands
+// further along the same path rather than distorting it.
 bool Terminal::_StepScrollAnimation(const double deltaSeconds) noexcept
 {
     if (!_smoothScrollEnabled || _inAltBuffer())
@@ -1318,28 +1416,28 @@ bool Terminal::_StepScrollAnimation(const double deltaSeconds) noexcept
         return false;
     }
 
-    const auto diff = _smoothScrollTarget - _smoothScrollCurrent;
-    const auto cellHeight = std::max(1, _fontInfo.GetSize().height);
-    // Settle once we are within half a device pixel of the target. Any closer is
-    // invisible and would keep the render thread spinning forever.
-    const auto epsilon = 0.5 / cellHeight;
-
-    if (std::abs(diff) < epsilon)
+    if (!_smoothScrollCurve.IsRunning())
     {
-        if (_smoothScrollCurrent != _smoothScrollTarget)
-        {
-            _smoothScrollCurrent = _smoothScrollTarget;
-            _ApplySmoothScrollPosition();
-        }
         _smoothScrollLastTick = 0;
         return false;
     }
 
-    if (deltaSeconds > 0.0)
+    // The buffer can shrink out from underneath a running animation (a resize, or the
+    // circular buffer rolling over while _PreserveUserScrollOffset slides it along), so
+    // the curve's own idea of where it is going has to be kept inside it.
+    const auto maxOffset = static_cast<double>(_MaxScrollOffset());
+
+    _smoothScrollElapsed += std::max(0.0, deltaSeconds);
+    _smoothScrollCurrent = std::clamp(_smoothScrollCurve.ValueAt(_smoothScrollElapsed), 0.0, maxOffset);
+
+    const auto finished = _smoothScrollCurve.IsFinishedAt(_smoothScrollElapsed);
+    if (finished)
     {
-        const auto tau = SmoothScrollBaseTimeConstant / _smoothScrollSpeed;
-        const auto alpha = 1.0 - std::exp(-deltaSeconds / tau);
-        _smoothScrollCurrent += diff * alpha;
+        _smoothScrollCurrent = std::clamp(_smoothScrollCurve.Target(), 0.0, maxOffset);
+        _smoothScrollTarget = _smoothScrollCurrent;
+        _smoothScrollCurve.Reset();
+        _smoothScrollElapsed = 0.0;
+        _smoothScrollLastTick = 0;
     }
 
     if (_ApplySmoothScrollPosition())
@@ -1351,7 +1449,7 @@ bool Terminal::_StepScrollAnimation(const double deltaSeconds) noexcept
         }
         CATCH_LOG()
     }
-    return true;
+    return !finished;
 }
 
 #pragma endregion

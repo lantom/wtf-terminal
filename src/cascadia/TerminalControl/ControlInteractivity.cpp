@@ -464,8 +464,10 @@ namespace winrt::Microsoft::Terminal::Control::implementation
                 const auto newValue = numRows + currentOffset;
 
                 // Update the Core's viewport position, and raise a
-                // ScrollPositionChanged event to update the scrollbar
-                UpdateScrollbar(newValue);
+                // ScrollPositionChanged event to update the scrollbar.
+                // A pan is continuous input: the view has to stay under the finger,
+                // so it is applied immediately rather than animated towards.
+                UpdateScrollbarImmediate(newValue);
 
                 // Use this point as our new scroll anchor.
                 _touchAnchor = newTouchPoint;
@@ -592,6 +594,42 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         _core->AdjustFontSize(fontDelta);
     }
 
+    // How far one wheel notch moves the view, in rows.
+    //
+    // Windows reports the user's preference in *lines* (SPI_GETWHEELSCROLLLINES, three by
+    // default). A terminal has always read that as three buffer rows, which is 45-60 px
+    // depending on the font. A browser reads it as three of its own lines, and a browser
+    // line is a fixed 100/3 DIPs (Chromium's kScrollbarPixelsPerLine, in
+    // web_input_event_builders_win.cc), so the same three notches move about 100 DIPs -
+    // roughly twice as far.
+    //
+    // That difference is most of why the terminal does not feel like a browser even with
+    // an identical animation curve. It is not only that the view travels less: covering
+    // half the distance in the same 100-200 ms halves the per-frame step, and since the
+    // shift is rounded to whole device pixels to keep glyphs crisp, a smaller step means
+    // that rounding is a larger fraction of it. At ~2 px a frame a half-pixel of rounding
+    // is a visible wobble; at ~4 px it is not.
+    //
+    // So with smooth scrolling on, interpret the user's setting the way a browser does.
+    // Turning smooth scrolling off goes back to counting buffer rows, as before.
+    float ControlInteractivity::_browserRowsPerNotch() const
+    {
+        if (!_core->SmoothScrollingEnabled())
+        {
+            return static_cast<float>(_rowsToScroll);
+        }
+
+        // Chromium: kScrollbarPixelsPerLine = 100.0f / 3.0f, in DIPs.
+        static constexpr auto browserDipsPerLine = 100.0f / 3.0f;
+        const auto cellHeightInDips = _core->FontSizeInDips().Height;
+        if (cellHeightInDips <= 0.0f)
+        {
+            return static_cast<float>(_rowsToScroll);
+        }
+
+        return static_cast<float>(_rowsToScroll) * browserDipsPerLine / cellHeightInDips;
+    }
+
     // Method Description:
     // - Scroll the visible viewport in response to a mouse wheel event.
     // Arguments:
@@ -633,12 +671,24 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         // WHEEL_PAGESCROLL is a Win32 constant that represents the "scroll one page
         // at a time" setting. If we ignore it, we will scroll a truly absurd number
         // of rows.
-        const auto rowsToScroll{ _rowsToScroll == WHEEL_PAGESCROLL ? _core->ViewHeight() : _rowsToScroll };
+        const auto rowsToScroll{ _rowsToScroll == WHEEL_PAGESCROLL ? _core->ViewHeight() : _browserRowsPerNotch() };
         const auto newValue = rowsToScroll * rowDelta + currentOffset;
+
+        // A whole notch is a discrete step, and that is what a browser animates: the
+        // wheel says "go three lines", and the curve decides how to get there.
+        //
+        // A delta smaller than a notch is not a step at all - it comes from a
+        // high-resolution wheel or a precision touchpad, which are already reporting
+        // continuous motion many times a second. Browsers hand those straight to the
+        // scroller (Chromium's kScrollByPrecisePixel) because animating input that is
+        // already smooth only puts the view behind the user's fingers. We have
+        // sub-row precision either way, so applying it immediately still moves by
+        // fractions of a row.
+        const auto isPreciseDelta = std::abs(mouseDelta) < WHEEL_DELTA;
 
         // Update the Core's viewport position, and raise a
         // ScrollPositionChanged event to update the scrollbar
-        UpdateScrollbar(newValue);
+        _updateScrollbar(newValue, !isPreciseDelta);
 
         if (isLeftButtonPressed)
         {
@@ -666,6 +716,19 @@ namespace winrt::Microsoft::Terminal::Control::implementation
     // - <none>
     void ControlInteractivity::UpdateScrollbar(const float newValue)
     {
+        _updateScrollbar(newValue, true);
+    }
+
+    // As UpdateScrollbar(), but the viewport lands on `newValue` this frame instead of
+    // animating towards it. For input that is already continuous - a scrollbar drag, a
+    // touch pan, a sub-notch wheel delta - which has to track the user's hand.
+    void ControlInteractivity::UpdateScrollbarImmediate(const float newValue)
+    {
+        _updateScrollbar(newValue, false);
+    }
+
+    void ControlInteractivity::_updateScrollbar(const float newValue, const bool animate)
+    {
         // Set this as the new value of our internal scrollbar representation.
         // We're doing this so we can accumulate fractional amounts of a row to
         // scroll each time the mouse scrolls.
@@ -677,7 +740,7 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         // row, which the classic path below has to round away.
         if (_core->SmoothScrollingEnabled())
         {
-            _core->SmoothScrollToRow(_internalScrollbarPosition);
+            _core->SmoothScrollToRow(_internalScrollbarPosition, animate);
 
             ScrollPositionChanged.raise(*this,
                                         winrt::make<ScrollPositionChangedArgs>(_core->ScrollOffset(),

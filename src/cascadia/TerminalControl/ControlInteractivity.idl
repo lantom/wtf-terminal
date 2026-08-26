@@ -65,6 +65,9 @@ namespace Microsoft.Terminal.Control
                            MouseButtonState state);
 
         void UpdateScrollbar(Single newValue);
+        // For input that is already continuous - a scrollbar drag, a touch pan - which
+        // must track the user's hand instead of animating after it.
+        void UpdateScrollbarImmediate(Single newValue);
 
         event Windows.Foundation.TypedEventHandler<Object, OpenHyperlinkEventArgs> OpenHyperlink;
         event Windows.Foundation.TypedEventHandler<Object, ScrollPositionChangedArgs> ScrollPositionChanged;

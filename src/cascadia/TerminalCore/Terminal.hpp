@@ -14,6 +14,7 @@
 #include "../../types/inc/Viewport.hpp"
 #include "../../types/inc/GlyphWidth.hpp"
 #include "../../cascadia/terminalcore/ITerminalInput.hpp"
+#include "ScrollAnimation.h"
 
 #include <til/generational.h>
 #include <til/ticket_lock.h>
@@ -195,9 +196,15 @@ public:
     // GetScrollOffset(): as an absolute buffer row. Fractional while animating.
     double GetSmoothScrollTargetRow() const noexcept;
     double GetSmoothScrollCurrentRow() const noexcept;
-    // Scrolls to a fractional buffer row. With smooth scrolling enabled this starts an
-    // animation; otherwise it behaves exactly like UserScrollViewport(lround(viewTop)).
-    void SmoothScrollToRow(const double viewTop);
+    // Scrolls to a fractional buffer row. With smooth scrolling enabled and animate
+    // set this starts an animation; otherwise it behaves exactly like
+    // UserScrollViewport(lround(viewTop)).
+    //
+    // animate == false is how a browser treats input that is already continuous - a
+    // scrollbar drag, a touch pan, a sub-notch high-resolution wheel delta. The view
+    // has to track the finger one-to-one, so the position is taken immediately (still
+    // with sub-row precision, which is the part that makes it look smooth).
+    void SmoothScrollToRow(const double viewTop, const bool animate = true);
 #pragma endregion
 
     void TrySnapOnInput() override;
@@ -453,8 +460,18 @@ private:
     bool _smoothScrollEnabled = false;
     // 0 <= _scrollPixelShift < cellHeight. The renderer moves the frame up by this much.
     til::CoordType _scrollPixelShift = 0;
-    // QueryPerformanceCounter value of the last animation tick; 0 means "not running".
+    // The browser scroll curve. _smoothScrollCurrent is read off it every frame; it is
+    // a function of the time since the animation started, not an accumulation of
+    // per-frame steps, so a dropped frame changes nothing about the path taken.
+    ScrollAnimationCurve _smoothScrollCurve;
+    double _smoothScrollElapsed = 0.0;
+    // QueryPerformanceCounter value of the last animation tick, snapped onto the
+    // display's refresh grid; 0 means "not running".
     int64_t _smoothScrollLastTick = 0;
+    // The refresh grid itself, as DWM reports it. Re-read a few times a second.
+    int64_t _smoothScrollRefreshPeriod = 0;
+    int64_t _smoothScrollVBlankRef = 0;
+    int64_t _smoothScrollTimingQueriedAt = 0;
     // TODO this might not be the value we want to store.
     // We might want to store the height in the scrollback that's currently visible.
     // Think on this some more.
@@ -505,6 +522,9 @@ private:
     // Advances the animation by an explicit time step. AdvanceScrollAnimation() measures
     // the step off the wall clock and calls this; tests drive it directly.
     bool _StepScrollAnimation(const double deltaSeconds) noexcept;
+    // Rounds a QPC reading down onto the display's vertical blank grid, so that the
+    // curve is sampled the way a browser's compositor samples its own.
+    int64_t _SnapToRefreshGrid(const int64_t nowTicks) noexcept;
     til::CoordType _ScrollToPoints(const til::point coordStart, const til::point coordEnd);
 
     void _NotifyScrollEvent();

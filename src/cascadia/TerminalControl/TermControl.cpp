@@ -2241,7 +2241,18 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         }
 
         const auto newValue = args.NewValue();
-        _interactivity.UpdateScrollbar(static_cast<float>(newValue));
+        if (_scrollBarChangeIsProgrammatic)
+        {
+            // A keyboard scroll or a scrollUp/scrollDown action: a discrete step, the
+            // same shape of input as a wheel notch, and browsers animate those.
+            _interactivity.UpdateScrollbar(static_cast<float>(newValue));
+        }
+        else
+        {
+            // Dragging the thumb is continuous input - it has to stay under the
+            // pointer. Browsers do not animate scrollbar drags either.
+            _interactivity.UpdateScrollbarImmediate(static_cast<float>(newValue));
+        }
 
         // User input takes priority over terminal events so cancel
         // any pending scroll bar update if the user scrolls.
@@ -2698,6 +2709,11 @@ namespace winrt::Microsoft::Terminal::Control::implementation
     // - viewTop: the viewTop to scroll to
     void TermControl::ScrollViewport(int viewTop)
     {
+        // ValueChanged is raised synchronously from the setter, so the flag only has to
+        // live for the duration of this call - the same trick _throttledUpdateScrollbar
+        // plays with _isInternalScrollBarUpdate.
+        _scrollBarChangeIsProgrammatic = true;
+        const auto restore = wil::scope_exit([this]() { _scrollBarChangeIsProgrammatic = false; });
         ScrollBar().Value(viewTop);
     }
 

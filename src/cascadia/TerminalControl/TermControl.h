@@ -300,6 +300,10 @@ namespace winrt::Microsoft::Terminal::Control::implementation
         std::shared_ptr<ThrottledFunc<ScrollBarUpdate>> _updateScrollBar;
 
         bool _isInternalScrollBarUpdate;
+        // Set while ScrollViewport() is driving the scroll bar, i.e. for a keyboard
+        // scroll or a scrollUp/scrollDown action. Those are discrete steps and get the
+        // animation; a drag of the thumb arrives through the same event and must not.
+        bool _scrollBarChangeIsProgrammatic{ false };
 
         // Auto scroll occurs when user, while selecting, drags cursor outside
         // viewport. View is then scrolled to 'follow' the cursor.

@@ -31,6 +31,7 @@ namespace ControlUnitTests
         TEST_METHOD(TestScrollWithMouse);
         TEST_METHOD(SmoothScrollingMovesTheViewportOverTime);
         TEST_METHOD(SmoothScrollingAccumulatesRapidNotches);
+        TEST_METHOD(SubNotchDeltasApplyImmediately);
 
         TEST_METHOD(CreateSubsequentSelectionWithDragging);
         TEST_METHOD(ScrollWithSelection);
@@ -239,6 +240,12 @@ namespace ControlUnitTests
                                   buttonState);
         VERIFY_ARE_EQUAL(before, core->ScrollOffset(), L"the viewport has not caught up yet");
 
+        // How far one notch goes is the browser rule's business (see
+        // ControlInteractivity::_browserRowsPerNotch); this test is about the animation,
+        // so take the target it picked and check the viewport reaches it.
+        const auto target = core->ScrollTargetRow();
+        VERIFY_IS_TRUE(target < before, L"...but it is heading upwards");
+
         Log::Comment(L"Pumping frames must land it exactly one row up");
         // The animation is driven off the wall clock, so give it real time to settle.
         // At speed 1.0 it needs roughly half a second; two is a generous ceiling.
@@ -251,8 +258,8 @@ namespace ControlUnitTests
         }
 
         VERIFY_IS_FALSE(running, L"the animation has to settle, not run forever");
-        VERIFY_ARE_EQUAL(before - 1, core->ScrollOffset());
-        VERIFY_ARE_EQUAL(0, core->ScrollPixelShift(), L"a whole-row target settles on a whole row");
+        // ScrollOffset() is the first row painted, which is floor() of a fractional target.
+        VERIFY_ARE_EQUAL(static_cast<int>(std::floor(target)), core->ScrollOffset());
     }
 
     // Spinning the wheel produces notches far faster than frames get rendered, so every
@@ -273,17 +280,26 @@ namespace ControlUnitTests
         auto [core, interactivity] = _createCoreAndInteractivity(*settings, *conn);
         _standardInit(core, interactivity);
 
-        constexpr auto rowsPerNotch = 3;
+        constexpr auto wheelScrollLines = 3;
         constexpr auto notches = 5;
-        interactivity->_rowsToScroll = rowsPerNotch;
+        interactivity->_rowsToScroll = wheelScrollLines;
 
         for (auto i = 0; i < 100; ++i)
         {
             conn->WriteInput(winrt_wstring_to_array_view(L"Foo\r\n"));
         }
 
+        // With smooth scrolling on, a "line" is a browser line - 100/3 DIPs - not a buffer
+        // row, so one notch covers more rows than the raw setting says. See
+        // ControlInteractivity::_browserRowsPerNotch().
+        const auto cellHeightInDips = core->FontSizeInDips().Height;
+        VERIFY_IS_TRUE(cellHeightInDips > 0.0f);
+        const auto rowsPerNotch = wheelScrollLines * (100.0f / 3.0f) / cellHeightInDips;
+        Log::Comment(String().Format(L"cell=%f dips, rowsPerNotch=%f", cellHeightInDips, rowsPerNotch));
+        VERIFY_IS_TRUE(rowsPerNotch > wheelScrollLines, L"a browser line is taller than a terminal row");
+
         const auto start = core->ScrollOffset();
-        VERIFY_IS_GREATER_THAN(start, notches * rowsPerNotch, L"there has to be room to scroll into");
+        VERIFY_IS_TRUE(static_cast<float>(start) > notches * rowsPerNotch, L"there has to be room to scroll into");
 
         const Control::MouseButtonState buttonState{};
         const auto modifiers = ControlKeyStates();
@@ -298,10 +314,10 @@ namespace ControlUnitTests
                                       buttonState);
         }
 
-        const auto expected = start - (notches * rowsPerNotch);
+        const auto expected = static_cast<double>(start) - (notches * rowsPerNotch);
         const auto target = core->ScrollTargetRow();
-        Log::Comment(String().Format(L"start=%d target=%f expected=%d", start, target, expected));
-        VERIFY_ARE_EQUAL(expected, static_cast<int>(std::lround(target)), L"every notch has to count");
+        Log::Comment(String().Format(L"start=%d target=%f expected=%f", start, target, expected));
+        VERIFY_IS_TRUE(std::abs(target - expected) < 0.001, L"every notch has to count");
 
         // And the viewport must actually get there.
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
@@ -313,7 +329,55 @@ namespace ControlUnitTests
         }
 
         VERIFY_IS_FALSE(running, L"the animation has to settle");
-        VERIFY_ARE_EQUAL(expected, core->ScrollOffset());
+        VERIFY_ARE_EQUAL(static_cast<int>(std::floor(expected)), core->ScrollOffset());
+    }
+
+    // A delta smaller than a notch comes from a high-resolution wheel or a precision
+    // trackpad, which are already sending continuous motion. Browsers hand those
+    // straight to the scroller rather than animating after them, and so do we: the
+    // view has to be under the user's fingers, not a curve's length behind them.
+    void ControlInteractivityTests::SubNotchDeltasApplyImmediately()
+    {
+        BEGIN_TEST_METHOD_PROPERTIES()
+            TEST_METHOD_PROPERTY(L"IsolationLevel", L"Method")
+        END_TEST_METHOD_PROPERTIES()
+
+        auto [settings, conn] = _createSettingsAndConnection();
+        settings->SmoothScrolling(true);
+        settings->SmoothScrollingSpeed(1.0);
+
+        auto [core, interactivity] = _createCoreAndInteractivity(*settings, *conn);
+        _standardInit(core, interactivity);
+        interactivity->_rowsToScroll = 3;
+
+        for (auto i = 0; i < 100; ++i)
+        {
+            conn->WriteInput(winrt_wstring_to_array_view(L"Foo\r\n"));
+        }
+
+        const auto start = core->ScrollOffset();
+        VERIFY_IS_GREATER_THAN(start, 10);
+
+        const auto cellHeightInDips = core->FontSizeInDips().Height;
+        const auto rowsPerNotch = 3 * (100.0f / 3.0f) / cellHeightInDips;
+        // Half a notch up, which is deliberately not a whole number of rows.
+        const auto expected = static_cast<int>(std::floor(start - rowsPerNotch / 2.0f));
+
+        const Control::MouseButtonState buttonState{};
+        const auto modifiers = ControlKeyStates();
+        interactivity->MouseWheel(modifiers,
+                                  Core::Point{ 0, WHEEL_DELTA / 2 },
+                                  Core::Point{ 0, 0 },
+                                  buttonState);
+
+        VERIFY_ARE_EQUAL(expected, core->ScrollOffset(), L"the view moves this frame, not over the next few");
+        VERIFY_IS_GREATER_THAN(core->ScrollPixelShift(), 0, L"and it lands part way into a row");
+
+        {
+            const auto lock = core->_terminal->LockForWriting();
+            VERIFY_IS_FALSE(core->_terminal->AdvanceScrollAnimation(), L"there is nothing left to animate");
+        }
+        VERIFY_ARE_EQUAL(expected, core->ScrollOffset(), L"and pumping a frame does not move it further");
     }
 
     void ControlInteractivityTests::TestScrollWithMouse()

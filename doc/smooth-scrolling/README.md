@@ -23,15 +23,27 @@ Both are global (window) settings, so they can also be set by hand in `settings.
 }
 ```
 
-**Speed** is how quickly the view catches up with where you scrolled to. At `1.0` the
-view covers ~63% of the remaining distance every 90 ms, which reads as a gentle glide.
-Turn it up for something snappier, down for something more languid. It does not change
-how far one wheel notch scrolls - that stays under the control of the Windows
-"lines to scroll" mouse setting, exactly as before.
+The motion is the one a web browser uses - the curve itself is ported from Chromium
+(`cc/animation/scroll_offset_animation_curve.cc`). A wheel notch eases in and out over
+100-200 ms, longer scrolls take *less* time than short ones, and a notch that arrives
+while the view is still moving picks up the current speed instead of restarting, so a
+run of quick notches reads as one continuous movement.
 
-It applies to every way of scrolling: the wheel, a precision trackpad, dragging the
-scrollbar, and keyboard scrolling. Precision trackpads benefit the most, because their
-sub-row deltas used to be rounded away.
+**Speed** scales that duration: `1.0` is what a browser does, `2.0` is twice as quick,
+`0.5` half.
+
+One notch also travels as far as it would in a browser. Windows tells us the preference
+in *lines* (three by default); a terminal has always read that as three buffer rows,
+while a browser reads it as three browser lines of 100/3 DIPs each - about 100 DIPs
+either way it is set, roughly twice a terminal's. Your Windows "lines to scroll" setting
+is still what decides; only the length of a line changed. Turning smooth scrolling off
+goes back to counting buffer rows.
+
+Input that is already continuous is *not* animated, which is also what browsers do:
+dragging the scrollbar, panning with touch, and the sub-notch deltas a precision
+trackpad or a high-resolution wheel sends are applied the moment they arrive, so the
+view stays under your hand. They still move by fractions of a row - the pixel shift
+applies either way, which is what precision trackpads gain here.
 
 ## How it works
 

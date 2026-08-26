@@ -53,6 +53,15 @@ class TerminalCoreUnitTests::SmoothScrollTest final
     TEST_METHOD(SettingsAreClamped);
     TEST_METHOD(OutputWhileScrolledBackKeepsThePosition);
 
+    // The browser curve itself.
+    TEST_METHOD(CurveEasesInAndOut);
+    TEST_METHOD(CurveDurationShrinksAsTheDistanceGrows);
+    TEST_METHOD(CurveSpeedScalesTheDuration);
+    TEST_METHOD(RetargetingKeepsPositionAndVelocity);
+    TEST_METHOD(RetargetingDoesNotStallOnRepeatedNotches);
+    TEST_METHOD(ADroppedFrameDoesNotChangeThePath);
+    TEST_METHOD(ContinuousInputIsNotAnimated);
+
     TEST_METHOD_SETUP(MethodSetup)
     {
         _term = std::make_unique<Terminal>(Terminal::TestDummyMarker{});
@@ -382,4 +391,148 @@ void SmoothScrollTest::OutputWhileScrolledBackKeepsThePosition()
 
     VERIFY_ARE_EQUAL(topRowBefore, _term->GetScrollOffset(), L"the same buffer row is still on top");
     VERIFY_ARE_EQUAL(shiftBefore, _term->GetScrollPixelShift(), L"and at the same sub-row offset");
+}
+
+// The defining shape of the browser curve, and what a plain exponential decay does not
+// give you: the movement starts slowly, is fastest in the middle, and slows down again
+// before it stops. An exponential is at its fastest on the very first frame.
+void SmoothScrollTest::CurveEasesInAndOut()
+{
+    ScrollAnimationCurve curve;
+    curve.Start(0.0, 20.0, CellHeight, 1.0);
+    const auto duration = curve.Duration();
+    VERIFY_IS_TRUE(duration > 0.0);
+
+    const auto atStart = std::abs(curve.VelocityAt(0.02 * duration));
+    const auto atMiddle = std::abs(curve.VelocityAt(0.50 * duration));
+    const auto atEnd = std::abs(curve.VelocityAt(0.98 * duration));
+
+    VERIFY_IS_TRUE(atStart < atMiddle, L"the curve has to ease in");
+    VERIFY_IS_TRUE(atEnd < atMiddle, L"...and ease out");
+
+    // And it does get all the way there.
+    VERIFY_ARE_EQUAL(20.0, curve.ValueAt(duration));
+    VERIFY_IS_TRUE(curve.IsFinishedAt(duration));
+}
+
+// cc's DurationBehavior::kInverseDelta, which is what Chromium picks for a mouse wheel:
+// 12 frames at 60Hz for anything up to 120px, ramping down to 6 at 480px and beyond. A
+// longer scroll runs for *less* time, so a fast flick does not feel like it is wading.
+void SmoothScrollTest::CurveDurationShrinksAsTheDistanceGrows()
+{
+    const auto durationFor = [](const double rows) {
+        ScrollAnimationCurve curve;
+        curve.Start(0.0, rows, CellHeight, 1.0);
+        return curve.Duration();
+    };
+
+    // 2 rows = 32px, below the ramp: the maximum, 12/60s.
+    VERIFY_IS_TRUE(std::abs(durationFor(2.0) - 12.0 / 60.0) < 1e-9);
+    // 40 rows = 640px, past the end of the ramp: the minimum, 6/60s.
+    VERIFY_IS_TRUE(std::abs(durationFor(40.0) - 6.0 / 60.0) < 1e-9);
+    // 15 rows = 240px, halfway up the ramp: 14 - 240/60 = 10 frames.
+    VERIFY_IS_TRUE(std::abs(durationFor(15.0) - 10.0 / 60.0) < 1e-9);
+
+    VERIFY_IS_TRUE(durationFor(2.0) > durationFor(15.0));
+    VERIFY_IS_TRUE(durationFor(15.0) > durationFor(40.0));
+}
+
+void SmoothScrollTest::CurveSpeedScalesTheDuration()
+{
+    ScrollAnimationCurve slow;
+    slow.Start(0.0, 10.0, CellHeight, 1.0);
+    ScrollAnimationCurve fast;
+    fast.Start(0.0, 10.0, CellHeight, 2.0);
+
+    VERIFY_IS_TRUE(std::abs(fast.Duration() * 2.0 - slow.Duration()) < 1e-9);
+}
+
+// The reason browser scrolling reads as one continuous movement: a notch that lands
+// mid-animation rebuilds the curve from where the view *is* and how fast it is
+// *going*, so there is no jump in either.
+void SmoothScrollTest::RetargetingKeepsPositionAndVelocity()
+{
+    ScrollAnimationCurve curve;
+    curve.Start(0.0, 6.0, CellHeight, 1.0);
+
+    const auto t = curve.Duration() * 0.4;
+    const auto positionBefore = curve.ValueAt(t);
+    const auto velocityBefore = curve.VelocityAt(t);
+    VERIFY_IS_TRUE(velocityBefore > 0.0);
+
+    curve.UpdateTarget(t, 12.0, CellHeight, 1.0);
+
+    VERIFY_IS_TRUE(std::abs(curve.ValueAt(t) - positionBefore) < 1e-6, L"the view must not jump");
+    VERIFY_IS_TRUE(std::abs(curve.VelocityAt(t) - velocityBefore) / velocityBefore < 1e-3, L"and it must not change speed either");
+    VERIFY_ARE_EQUAL(12.0, curve.Target());
+}
+
+// Rapid notches in the same direction have to keep making progress. Each one retargets
+// the curve; the position must keep climbing and the animation must still terminate.
+void SmoothScrollTest::RetargetingDoesNotStallOnRepeatedNotches()
+{
+    ScrollAnimationCurve curve;
+    curve.Start(0.0, 3.0, CellHeight, 1.0);
+
+    auto t = 0.0;
+    auto previous = 0.0;
+    for (auto notch = 1; notch < 6; ++notch)
+    {
+        // Two 120Hz frames between notches, which is about as fast as a wheel goes.
+        t += 2.0 / 120.0;
+        const auto position = curve.ValueAt(t);
+        VERIFY_IS_TRUE(position > previous, L"every notch has to move the view further");
+        previous = position;
+
+        curve.UpdateTarget(t, 3.0 * (notch + 1), CellHeight, 1.0);
+    }
+
+    VERIFY_ARE_EQUAL(18.0, curve.Target());
+    VERIFY_IS_TRUE(curve.IsFinishedAt(curve.Duration()));
+    VERIFY_ARE_EQUAL(18.0, curve.ValueAt(curve.Duration()), L"all five notches have to land");
+}
+
+// The position is a function of the elapsed time, not a sum of per-frame steps, so a
+// frame the render thread missed lands further along the same path instead of bending
+// it. That is what keeps the motion looking identical at 60, 120 and 165Hz.
+void SmoothScrollTest::ADroppedFrameDoesNotChangeThePath()
+{
+    _fillScrollback();
+    _enableSmoothScrolling();
+
+    const auto bottom = _term->GetScrollOffset();
+
+    _term->SmoothScrollToRow(bottom - 20);
+    for (auto i = 0; i < 4; ++i)
+    {
+        _term->_StepScrollAnimation(Frame);
+    }
+    const auto stepped = _term->GetSmoothScrollCurrentRow();
+
+    _term->_SetScrollOffsetImmediate(0);
+    _term->SmoothScrollToRow(bottom - 20);
+    _term->_StepScrollAnimation(4.0 * Frame);
+    const auto jumped = _term->GetSmoothScrollCurrentRow();
+
+    VERIFY_IS_TRUE(std::abs(stepped - jumped) < 1e-9,
+                   L"four frames and one four-times-longer frame have to end up in the same place");
+}
+
+// A scrollbar drag, a touch pan or a sub-notch wheel delta is input that is already
+// continuous. Browsers apply it directly; animating after it would only add lag.
+void SmoothScrollTest::ContinuousInputIsNotAnimated()
+{
+    _fillScrollback();
+    _enableSmoothScrolling();
+
+    const auto bottom = _term->GetScrollOffset();
+    _term->SmoothScrollToRow(bottom - 10.5, false);
+
+    VERIFY_IS_FALSE(_term->AdvanceScrollAnimation(), L"nothing to animate - we are already there");
+    VERIFY_IS_TRUE(std::abs(_term->GetSmoothScrollCurrentRow() - (bottom - 10.5)) < 1e-9);
+    VERIFY_ARE_EQUAL(_term->GetSmoothScrollTargetRow(), _term->GetSmoothScrollCurrentRow());
+
+    // Half a row of a 16px cell is 8px of shift, and the row underneath it is the one
+    // above the position we asked for.
+    VERIFY_ARE_EQUAL(CellHeight / 2, _term->GetScrollPixelShift());
 }
